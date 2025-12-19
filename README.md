@@ -5,3 +5,10 @@
 # Mahcdown
 
 vibe trash, kehd
+
+## Shortcuts
+
+- Esc or Q: quit
+- R: reload the file
+- Cmd+F: search (opens the find bar, Enter/Shift+Enter navigates)
+- Cmd+= / Cmd+-: zoom in/out

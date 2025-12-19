@@ -1,10 +1,9 @@
 APP=mahcdown
-BINDIR=bin
+BINDIR=/Users/arr/bin
 
 .PHONY: build run lint staticcheck gosec test tidy clean
 
 build:
-	mkdir -p $(BINDIR)
 	go build -o $(BINDIR)/$(APP) ./cmd/mahcdown
 
 run:
@@ -26,4 +25,4 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -rf $(BINDIR)
+	rm -f $(BINDIR)/mahcdown
