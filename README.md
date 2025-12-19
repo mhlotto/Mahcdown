@@ -11,4 +11,5 @@ vibe trash, kehd
 - Esc or Q: quit
 - R: reload the file
 - Cmd+F: search (opens the find bar, Enter/Shift+Enter navigates)
+- Cmd+C: copy highlighted text
 - Cmd+= / Cmd+-: zoom in/out
