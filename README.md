@@ -4,7 +4,7 @@
 
 # Mahcdown
 
-vibe trash, kehd
+vibe trash, kehd. markdown viewah for mac, brah
 
 ## Shortcuts
 
