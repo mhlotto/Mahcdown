@@ -24,3 +24,12 @@ mahcdown --allow-outside-local-images <path-to-markdown-file>
 ```
 
 Remote images remain blocked in both modes.
+
+## Parser safety limits
+
+Mahcdown rejects documents larger than 8 MiB, parser nesting deeper than 64 levels, or documents
+that would consume more than 200,000 parse items. The shared parse-item budget covers document
+lines, AST nodes, list items, table rows and cells, blockquote lines, code lines, and other retained
+parser structure. These are safety boundaries rather than claims about full Markdown complexity.
+Malformed or unsupported Markdown still falls back to ordinary literal text unless a safety
+boundary is exceeded. Limit failures are reported without partially rendering the document.

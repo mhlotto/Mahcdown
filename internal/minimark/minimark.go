@@ -132,18 +132,60 @@ func (Strong) inlineNode()   {}
 func (Emphasis) inlineNode() {}
 func (Text) inlineNode()     {}
 
-// Parse converts MiniMark text into a Document AST.
-func Parse(input string) Document {
-	norm := normalizeNewlines(input)
-	lines := strings.Split(norm, "\n")
-	blocks, _ := parseBlocks(lines, 0, 0)
-	return Document{Blocks: blocks}
+// Parse converts MiniMark text into a Document AST using the default safety limits.
+func Parse(input string) (Document, error) {
+	return ParseWithLimits(input, Limits{})
 }
 
-func parseBlocks(lines []string, start, baseIndent int) ([]Block, int) {
+// ParseWithLimits converts MiniMark text into a Document AST using limits.
+func ParseWithLimits(input string, limits Limits) (Document, error) {
+	limits, err := normalizedLimits(limits)
+	if err != nil {
+		return Document{}, err
+	}
+	if len(input) > limits.MaxSourceBytes {
+		return Document{}, &LimitError{Kind: ErrSourceSizeLimit, Limit: limits.MaxSourceBytes}
+	}
+	state := &parserState{limits: limits}
+	if !state.consumeItem() { // Document root.
+		return Document{}, state.err
+	}
+	norm := normalizeNewlines(input)
+	lines := splitDocumentLines(state, norm)
+	if state.err != nil {
+		return Document{}, state.err
+	}
+	blocks, _ := parseBlocks(state, lines, 0, 0, 0)
+	if state.err != nil {
+		return Document{}, state.err
+	}
+	return Document{Blocks: blocks}, nil
+}
+
+func splitDocumentLines(state *parserState, input string) []string {
+	var lines []string
+	start := 0
+	for {
+		if !state.consumeItem() {
+			return nil
+		}
+		relativeEnd := strings.IndexByte(input[start:], '\n')
+		if relativeEnd < 0 {
+			return append(lines, input[start:])
+		}
+		end := start + relativeEnd
+		lines = append(lines, input[start:end])
+		start = end + 1
+	}
+}
+
+func parseBlocks(state *parserState, lines []string, start, baseIndent, depth int) ([]Block, int) {
+	if !state.allowDepth(depth) {
+		return nil, start
+	}
 	var blocks []Block
 	i := start
-	for i < len(lines) {
+	for i < len(lines) && state.err == nil {
 		line := lines[i]
 		if isBlank(line) {
 			i++
@@ -156,15 +198,21 @@ func parseBlocks(lines []string, start, baseIndent int) ([]Block, int) {
 
 		// 1. Fenced code block
 		if ok, info := isFenceStart(rel); ok {
-			i, blocks = parseCodeBlock(lines, i, baseIndent, info, &blocks)
+			if !state.consumeItem() {
+				break
+			}
+			i, blocks = parseCodeBlock(state, lines, i, baseIndent, info, &blocks)
 			continue
 		}
 
 		// 2. Heading
 		if lvl, text, ok := parseHeadingLine(rel); ok {
+			if !state.consumeItem() {
+				break
+			}
 			blocks = append(blocks, Heading{
 				Level:   lvl,
-				Inlines: parseInlines(text),
+				Inlines: parseInlines(state, text, depth),
 			})
 			i++
 			continue
@@ -172,20 +220,30 @@ func parseBlocks(lines []string, start, baseIndent int) ([]Block, int) {
 
 		// 3. Horizontal rule
 		if isHorizontalRule(rel) {
-			blocks = append(blocks, HorizontalRule{})
+			if state.consumeItem() {
+				blocks = append(blocks, HorizontalRule{})
+			}
 			i++
 			continue
 		}
 
 		// 4. Table
-		if tbl, consumed := tryParseTable(lines, i, baseIndent); consumed > 0 {
+		if isTableStart(lines, i, baseIndent) {
+			if !state.consumeItem() {
+				break
+			}
+			tbl, consumed := tryParseTable(state, lines, i, baseIndent, depth)
 			blocks = append(blocks, tbl)
 			i += consumed
 			continue
 		}
 
 		// 5. List
-		if lst, consumed := tryParseList(lines, i, baseIndent); consumed > 0 {
+		if _, ok := parseListMarker(rel); ok {
+			if !state.consumeItem() {
+				break
+			}
+			lst, consumed := tryParseList(state, lines, i, baseIndent, depth)
 			blocks = append(blocks, lst)
 			i += consumed
 			continue
@@ -193,12 +251,15 @@ func parseBlocks(lines []string, start, baseIndent int) ([]Block, int) {
 
 		// 6. Blockquote
 		if isBlockQuoteLine(rel) {
-			i, blocks = parseBlockQuote(lines, i, baseIndent, &blocks)
+			if !state.consumeItem() {
+				break
+			}
+			i, blocks = parseBlockQuote(state, lines, i, baseIndent, depth, &blocks)
 			continue
 		}
 
 		// 7. Paragraph
-		i, blocks = parseParagraph(lines, i, baseIndent, &blocks)
+		i, blocks = parseParagraph(state, lines, i, baseIndent, depth, &blocks)
 	}
 	return blocks, i
 }
@@ -255,9 +316,9 @@ func isFenceStart(line string) (bool, string) {
 	return true, strings.TrimSpace(rest)
 }
 
-func parseCodeBlock(lines []string, start int, baseIndent int, info string, blocks *[]Block) (int, []Block) {
+func parseCodeBlock(state *parserState, lines []string, start int, baseIndent int, info string, blocks *[]Block) (int, []Block) {
 	var content []string
-	for i := start + 1; i < len(lines); i++ {
+	for i := start + 1; i < len(lines) && state.err == nil; i++ {
 		line := trimIndent(lines[i], baseIndent)
 		if trimLead := leadingSpacesCount(line); trimLead <= 3 {
 			after := line[trimLead:]
@@ -268,6 +329,9 @@ func parseCodeBlock(lines []string, start int, baseIndent int, info string, bloc
 				})
 				return i + 1, *blocks
 			}
+		}
+		if !state.consumeItem() {
+			return i, *blocks
 		}
 		content = append(content, line)
 	}
@@ -309,7 +373,7 @@ func isHorizontalRule(line string) bool {
 	}
 }
 
-func tryParseTable(lines []string, start int, baseIndent int) (Table, int) {
+func tryParseTable(state *parserState, lines []string, start int, baseIndent, depth int) (Table, int) {
 	if start+1 >= len(lines) {
 		return Table{}, 0
 	}
@@ -319,30 +383,35 @@ func tryParseTable(lines []string, start int, baseIndent int) (Table, int) {
 		return Table{}, 0
 	}
 
-	headerCells := splitTableRow(headerLine)
-	sepCells := splitTableRow(sepLine)
-	if len(headerCells) == 0 || len(headerCells) != len(sepCells) {
+	headerCells := splitTableRow(state, headerLine)
+	if state.err != nil {
 		return Table{}, 0
 	}
-	aligns, ok := parseSeparatorAlignments(sepCells)
+	aligns, ok := parseSeparatorAlignments(state, sepLine, len(headerCells))
 	if !ok {
 		return Table{}, 0
 	}
 
 	rows := make([][][]Inline, 0)
 	consumed := 2
-	for i := start + 2; i < len(lines); i++ {
+	for i := start + 2; i < len(lines) && state.err == nil; i++ {
 		line := trimIndent(lines[i], baseIndent)
 		if isBlank(line) || !strings.Contains(line, "|") {
 			break
 		}
-		rowCells := splitTableRow(line)
+		if !state.consumeItem() { // Retained table row.
+			break
+		}
+		rowCells := splitTableRow(state, line)
 		if len(rowCells) == 0 {
 			break
 		}
 		row := make([][]Inline, 0, len(rowCells))
 		for _, cell := range rowCells {
-			row = append(row, parseInlines(cell))
+			if state.err != nil {
+				break
+			}
+			row = append(row, parseInlines(state, cell, depth))
 		}
 		rows = append(rows, row)
 		consumed++
@@ -350,7 +419,10 @@ func tryParseTable(lines []string, start int, baseIndent int) (Table, int) {
 
 	headers := make([][]Inline, len(headerCells))
 	for idx, cell := range headerCells {
-		headers[idx] = parseInlines(cell)
+		if state.err != nil {
+			break
+		}
+		headers[idx] = parseInlines(state, cell, depth)
 	}
 
 	return Table{
@@ -360,16 +432,13 @@ func tryParseTable(lines []string, start int, baseIndent int) (Table, int) {
 	}, consumed
 }
 
-func splitTableRow(line string) []string {
-	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "|") {
-		trimmed = trimmed[1:]
-	}
-	if strings.HasSuffix(trimmed, "|") {
-		trimmed = trimmed[:len(trimmed)-1]
-	}
+func splitTableRow(state *parserState, line string) []string {
+	trimmed := trimOuterTablePipes(line)
 	var cells []string
 	var current strings.Builder
+	if !state.consumeItem() { // First retained table cell.
+		return nil
+	}
 	escaped := false
 	for i := 0; i < len(trimmed); i++ {
 		ch := trimmed[i]
@@ -390,6 +459,9 @@ func splitTableRow(line string) []string {
 		if ch == '|' {
 			cells = append(cells, strings.TrimSpace(current.String()))
 			current.Reset()
+			if !state.consumeItem() { // Next retained table cell.
+				return cells
+			}
 			continue
 		}
 		current.WriteByte(ch)
@@ -398,39 +470,63 @@ func splitTableRow(line string) []string {
 	return cells
 }
 
-func parseSeparatorAlignments(cells []string) ([]Align, bool) {
-	aligns := make([]Align, 0, len(cells))
-	for _, cell := range cells {
-		trimmed := strings.TrimSpace(cell)
-		if trimmed == "" {
-			return nil, false
-		}
-		for _, r := range trimmed {
-			if r != '-' && r != ':' {
-				return nil, false
-			}
-		}
-		dashes := strings.Count(trimmed, "-")
-		if dashes < 3 {
-			return nil, false
-		}
-		left := strings.HasPrefix(trimmed, ":")
-		right := strings.HasSuffix(trimmed, ":")
-		switch {
-		case left && right:
-			aligns = append(aligns, AlignCenter)
-		case left:
-			aligns = append(aligns, AlignLeft)
-		case right:
-			aligns = append(aligns, AlignRight)
-		default:
-			aligns = append(aligns, AlignNone)
-		}
+func trimOuterTablePipes(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "|") {
+		trimmed = trimmed[1:]
 	}
-	return aligns, true
+	if strings.HasSuffix(trimmed, "|") {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed
 }
 
-func tryParseList(lines []string, start int, baseIndent int) (List, int) {
+func parseSeparatorAlignments(state *parserState, line string, expected int) ([]Align, bool) {
+	trimmed := trimOuterTablePipes(line)
+	aligns := make([]Align, 0, expected)
+	start := 0
+	for i := 0; i <= len(trimmed); i++ {
+		if i < len(trimmed) && trimmed[i] != '|' {
+			continue
+		}
+		align, ok := parseSeparatorCell(trimmed[start:i])
+		if !ok || !state.consumeItem() { // Retained column alignment.
+			return nil, false
+		}
+		aligns = append(aligns, align)
+		start = i + 1
+	}
+	return aligns, len(aligns) == expected
+}
+
+func parseSeparatorCell(cell string) (Align, bool) {
+	trimmed := strings.TrimSpace(cell)
+	if trimmed == "" {
+		return AlignNone, false
+	}
+	for _, r := range trimmed {
+		if r != '-' && r != ':' {
+			return AlignNone, false
+		}
+	}
+	if strings.Count(trimmed, "-") < 3 {
+		return AlignNone, false
+	}
+	left := strings.HasPrefix(trimmed, ":")
+	right := strings.HasSuffix(trimmed, ":")
+	switch {
+	case left && right:
+		return AlignCenter, true
+	case left:
+		return AlignLeft, true
+	case right:
+		return AlignRight, true
+	default:
+		return AlignNone, true
+	}
+}
+
+func tryParseList(state *parserState, lines []string, start int, baseIndent, depth int) (List, int) {
 	line := lines[start]
 	if leadingSpacesCount(line) < baseIndent {
 		return List{}, 0
@@ -448,7 +544,7 @@ func tryParseList(lines []string, start int, baseIndent int) (List, int) {
 	}
 
 	i := start
-	for i < len(lines) {
+	for i < len(lines) && state.err == nil {
 		// End conditions: dedent or non-marker at same level.
 		if isBlank(lines[i]) {
 			i++
@@ -459,7 +555,10 @@ func tryParseList(lines []string, start int, baseIndent int) (List, int) {
 		}
 		relLine := trimIndent(lines[i], baseIndent)
 		if m, ok := parseListMarker(relLine); ok && m.ordered == list.Ordered {
-			item, next := parseListItem(lines, i, baseIndent, m)
+			if !state.consumeItem() { // ListItem.
+				break
+			}
+			item, next := parseListItem(state, lines, i, baseIndent, depth, m)
 			list.Items = append(list.Items, item)
 			i = next
 			continue
@@ -508,7 +607,7 @@ func parseListMarker(line string) (listMarker, bool) {
 	return listMarker{}, false
 }
 
-func parseListItem(lines []string, start int, baseIndent int, marker listMarker) (ListItem, int) {
+func parseListItem(state *parserState, lines []string, start int, baseIndent int, depth int, marker listMarker) (ListItem, int) {
 	contentIndent := baseIndent + marker.length
 	nestedMinIndent := baseIndent + marker.indent + 2
 	rel := trimIndent(lines[start], baseIndent)
@@ -524,12 +623,18 @@ func parseListItem(lines []string, start int, baseIndent int, marker listMarker)
 	}
 
 	var itemLines []string
+	if !state.consumeItem() {
+		return ListItem{}, start + 1
+	}
 	itemLines = append(itemLines, content)
 
 	i := start + 1
-	for i < len(lines) {
+	for i < len(lines) && state.err == nil {
 		line := lines[i]
 		if isBlank(line) {
+			if !state.consumeItem() {
+				break
+			}
 			itemLines = append(itemLines, "")
 			i++
 			continue
@@ -548,6 +653,9 @@ func parseListItem(lines []string, start int, baseIndent int, marker listMarker)
 			if indent >= nestedMinIndent {
 				candidate := trimIndent(line, nestedMinIndent)
 				if _, ok := parseListMarker(candidate); ok {
+					if !state.consumeItem() {
+						break
+					}
 					itemLines = append(itemLines, candidate)
 					i++
 					continue
@@ -558,17 +666,26 @@ func parseListItem(lines []string, start int, baseIndent int, marker listMarker)
 		if indent >= contentIndent {
 			candidate := trimIndent(line, nestedMinIndent)
 			if _, ok := parseListMarker(candidate); ok {
+				if !state.consumeItem() {
+					break
+				}
 				itemLines = append(itemLines, candidate)
 			} else {
+				if !state.consumeItem() {
+					break
+				}
 				itemLines = append(itemLines, trimIndent(line, contentIndent))
 			}
 		} else {
+			if !state.consumeItem() {
+				break
+			}
 			itemLines = append(itemLines, "")
 		}
 		i++
 	}
 
-	blocks, _ := parseBlocks(itemLines, 0, 0)
+	blocks, _ := parseBlocks(state, itemLines, 0, 0, depth+1)
 	return ListItem{
 		HasCheckbox: hasCheckbox,
 		Checked:     checked,
@@ -585,76 +702,164 @@ func isBlockQuoteLine(line string) bool {
 	return strings.HasPrefix(l, ">")
 }
 
-func parseBlockQuote(lines []string, start int, baseIndent int, blocks *[]Block) (int, []Block) {
+func parseBlockQuote(state *parserState, lines []string, start int, baseIndent int, depth int, blocks *[]Block) (int, []Block) {
 	var quoteLines [][]Inline
-	for i := start; i < len(lines); i++ {
+	for i := start; i < len(lines) && state.err == nil; i++ {
 		line := trimIndent(lines[i], baseIndent)
 		if isBlank(line) {
-			return i + 1, append(*blocks, BlockQuote{Lines: quoteLines})
+			return i + 1, appendBlockQuote(*blocks, quoteLines)
 		}
 		if !isBlockQuoteLine(line) {
-			return i, append(*blocks, BlockQuote{Lines: quoteLines})
+			return i, appendBlockQuote(*blocks, quoteLines)
 		}
 		trimLead := leadingSpacesCount(line)
 		content := line[trimLead+1:]
 		if strings.HasPrefix(content, " ") {
 			content = content[1:]
 		}
-		quoteLines = append(quoteLines, parseInlines(content))
+		if !state.consumeItem() { // Retained blockquote line.
+			return i, *blocks
+		}
+		quoteLines = append(quoteLines, parseInlines(state, content, depth+1))
 	}
-	return len(lines), append(*blocks, BlockQuote{Lines: quoteLines})
+	return len(lines), appendBlockQuote(*blocks, quoteLines)
 }
 
-func parseParagraph(lines []string, start int, baseIndent int, blocks *[]Block) (int, []Block) {
+func appendBlockQuote(blocks []Block, lines [][]Inline) []Block {
+	return append(blocks, BlockQuote{Lines: lines})
+}
+
+func parseParagraph(state *parserState, lines []string, start int, baseIndent int, depth int, blocks *[]Block) (int, []Block) {
 	var paraLines []string
-	for i := start; i < len(lines); i++ {
+	for i := start; i < len(lines) && state.err == nil; i++ {
 		line := lines[i]
 		if isBlank(line) {
 			i++
-			return i, append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
 
 		if leadingSpacesCount(line) < baseIndent {
-			return i, append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
 
 		rel := trimIndent(line, baseIndent)
 
 		// Check if a higher-precedence block would start here.
 		if ok, _ := isFenceStart(rel); ok {
-			return i, append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
 		if _, _, ok := parseHeadingLine(rel); ok {
-			return i, append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
 		if isHorizontalRule(rel) {
-			return i, append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
-		if tbl, _ := tryParseTable(lines, i, baseIndent); tbl.Aligns != nil && tbl.Headers != nil {
-			return i, append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+		if isTableStart(lines, i, baseIndent) {
+			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
 		if isBlockQuoteLine(rel) {
-			return i, append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
-		if lst, _ := tryParseList(lines, i, baseIndent); lst.Items != nil {
-			return i, append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+		if _, ok := parseListMarker(rel); ok {
+			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
 
+		if !state.consumeItem() {
+			return i, *blocks
+		}
 		paraLines = append(paraLines, trimIndent(line, baseIndent))
 	}
-	return len(lines), append(*blocks, Paragraph{Inlines: parseInlines(strings.Join(paraLines, "\n"))})
+	return len(lines), appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 }
 
-func parseInlines(text string) []Inline {
+func isTableStart(lines []string, start, baseIndent int) bool {
+	if start+1 >= len(lines) {
+		return false
+	}
+	header := trimIndent(lines[start], baseIndent)
+	if isBlank(header) || !strings.Contains(header, "|") {
+		return false
+	}
+	headerCount := tableCellCount(header)
+	return headerCount > 0 && validSeparatorLine(trimIndent(lines[start+1], baseIndent), headerCount)
+}
+
+func tableCellCount(line string) int {
+	trimmed := trimOuterTablePipes(line)
+	count := 1
+	escaped := false
+	for i := 0; i < len(trimmed); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if trimmed[i] == '\\' {
+			escaped = true
+			continue
+		}
+		if trimmed[i] == '|' {
+			count++
+		}
+	}
+	return count
+}
+
+func validSeparatorLine(line string, expected int) bool {
+	trimmed := trimOuterTablePipes(line)
+	count := 0
+	start := 0
+	for i := 0; i <= len(trimmed); i++ {
+		if i < len(trimmed) && trimmed[i] != '|' {
+			continue
+		}
+		if _, ok := parseSeparatorCell(trimmed[start:i]); !ok {
+			return false
+		}
+		count++
+		start = i + 1
+	}
+	return count == expected
+}
+
+func appendParagraph(state *parserState, blocks []Block, text string, depth int) []Block {
+	if !state.consumeItem() {
+		return blocks
+	}
+	return append(blocks, Paragraph{Inlines: parseInlines(state, text, depth)})
+}
+
+func parseInlines(state *parserState, text string, depth int) []Inline {
+	if !state.allowDepth(depth) {
+		return nil
+	}
 	var out []Inline
 	i := 0
+	textStart := 0
 	atLineStart := true
-	for i < len(text) {
+	flushText := func(end int) bool {
+		if end <= textStart {
+			return true
+		}
+		if !state.consumeItem() {
+			return false
+		}
+		out = append(out, Text{Text: text[textStart:end]})
+		return true
+	}
+	appendInline := func(inline Inline, consumed int) bool {
+		if !flushText(i) || !state.consumeItem() {
+			return false
+		}
+		out = append(out, inline)
+		i += consumed
+		textStart = i
+		atLineStart = false
+		return true
+	}
+	for i < len(text) && state.err == nil {
 		if atLineStart {
 			if checked, consumed, ok := parseCheckbox(text[i:]); ok {
-				out = append(out, Checkbox{Checked: checked})
-				i += consumed
-				atLineStart = false
+				appendInline(Checkbox{Checked: checked}, consumed)
 				continue
 			}
 		}
@@ -664,9 +869,7 @@ func parseInlines(text string) []Inline {
 			end := strings.IndexByte(text[i+1:], '`')
 			if end >= 0 {
 				content := text[i+1 : i+1+end]
-				out = append(out, CodeSpan{Text: content})
-				i += end + 2
-				atLineStart = false
+				appendInline(CodeSpan{Text: content}, end+2)
 				continue
 			}
 			// No closing backtick; treat as text.
@@ -675,9 +878,7 @@ func parseInlines(text string) []Inline {
 		// Image
 		if strings.HasPrefix(text[i:], "![") {
 			if alt, url, consumed, ok := parseImage(text[i:]); ok {
-				out = append(out, Image{Alt: alt, URL: url})
-				i += consumed
-				atLineStart = false
+				appendInline(Image{Alt: alt, URL: url}, consumed)
 				continue
 			}
 		}
@@ -685,9 +886,7 @@ func parseInlines(text string) []Inline {
 		// Autolink
 		if text[i] == '<' {
 			if url, consumed, ok := parseAutoLink(text[i:]); ok {
-				out = append(out, Url{URL: url, Text: url})
-				i += consumed
-				atLineStart = false
+				appendInline(Url{URL: url, Text: url}, consumed)
 				continue
 			}
 		}
@@ -695,8 +894,16 @@ func parseInlines(text string) []Inline {
 		// Strong
 		if strings.HasPrefix(text[i:], "**") {
 			if content, consumed, ok := parseDelimited(text[i+2:], "**"); ok && content != "" && !strings.ContainsRune(content, '\n') {
-				out = append(out, Strong{Inlines: parseInlines(content)})
+				if !flushText(i) || !state.consumeItem() {
+					break
+				}
+				children := parseInlines(state, content, depth+1)
+				if state.err != nil {
+					break
+				}
+				out = append(out, Strong{Inlines: children})
 				i += 2 + consumed
+				textStart = i
 				atLineStart = false
 				continue
 			}
@@ -705,8 +912,16 @@ func parseInlines(text string) []Inline {
 		// Emphasis
 		if text[i] == '*' {
 			if content, consumed, ok := parseDelimitedSingleStar(text[i+1:]); ok && content != "" && !strings.ContainsRune(content, '\n') {
-				out = append(out, Emphasis{Inlines: parseInlines(content)})
+				if !flushText(i) || !state.consumeItem() {
+					break
+				}
+				children := parseInlines(state, content, depth+1)
+				if state.err != nil {
+					break
+				}
+				out = append(out, Emphasis{Inlines: children})
 				i += 1 + consumed
+				textStart = i
 				atLineStart = false
 				continue
 			}
@@ -716,19 +931,15 @@ func parseInlines(text string) []Inline {
 		// Bare URL
 		if strings.HasPrefix(text[i:], "http://") || strings.HasPrefix(text[i:], "https://") {
 			url, consumed := parseBareURL(text[i:])
-			out = append(out, Url{URL: url, Text: url})
-			i += consumed
-			atLineStart = false
+			appendInline(Url{URL: url, Text: url}, consumed)
 			continue
 		}
 
 		// Plain text
-		out = append(out, Text{Text: string(text[i])})
 		atLineStart = text[i] == '\n'
 		i++
 	}
-
-	out = mergeText(out)
+	flushText(i)
 	return out
 }
 
@@ -818,30 +1029,6 @@ func parseBareURL(s string) (string, int) {
 		end++
 	}
 	return url, end
-}
-
-func mergeText(inlines []Inline) []Inline {
-	if len(inlines) == 0 {
-		return inlines
-	}
-	var merged []Inline
-	var builder strings.Builder
-	flush := func() {
-		if builder.Len() > 0 {
-			merged = append(merged, Text{Text: builder.String()})
-			builder.Reset()
-		}
-	}
-	for _, inl := range inlines {
-		if t, ok := inl.(Text); ok {
-			builder.WriteString(t.Text)
-			continue
-		}
-		flush()
-		merged = append(merged, inl)
-	}
-	flush()
-	return merged
 }
 
 func parseCheckbox(s string) (checked bool, consumed int, ok bool) {

@@ -139,7 +139,10 @@ func TestParseBlocks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Parse(tt.input)
+			got, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
 			if !reflect.DeepEqual(got, tt.expected) {
 				t.Fatalf("Parse() mismatch.\ninput: %q\nexpected: %#v\ngot: %#v", tt.input, tt.expected, got)
 			}
@@ -220,7 +223,10 @@ func TestInlinePrecedence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			doc := Parse(tt.input)
+			doc, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
 			if len(doc.Blocks) != 1 {
 				t.Fatalf("expected single block, got %d", len(doc.Blocks))
 			}

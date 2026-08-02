@@ -4,7 +4,6 @@ import (
 	"fmt"
 	stdhtml "html"
 	"net/url"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -13,6 +12,7 @@ import (
 	"github.com/webview/webview_go"
 
 	"mahcdown/internal/minimark"
+	"mahcdown/internal/source"
 )
 
 const (
@@ -54,7 +54,7 @@ func Display(title, path, initialText string, options Options) error {
 
 	// Bind reload: re-read file, re-render, and update HTML.
 	_ = w.Bind("mahcdownReload", func() (string, error) {
-		data, err := os.ReadFile(path)
+		data, err := source.ReadFile(path, minimark.DefaultMaxSourceBytes)
 		if err != nil {
 			return "", err
 		}
@@ -93,7 +93,15 @@ func imagePolicyFor(baseDir string, options Options) (minimark.ImagePolicy, erro
 }
 
 func renderDocument(content, baseDir string, imagePolicy minimark.ImagePolicy) (string, error) {
-	return injectBase(minimark.RenderHTMLWithImagePolicy(minimark.Parse(content), imagePolicy), baseDir)
+	return renderDocumentWithLimits(content, baseDir, imagePolicy, minimark.Limits{})
+}
+
+func renderDocumentWithLimits(content, baseDir string, imagePolicy minimark.ImagePolicy, limits minimark.Limits) (string, error) {
+	document, err := minimark.ParseWithLimits(content, limits)
+	if err != nil {
+		return "", err
+	}
+	return injectBase(minimark.RenderHTMLWithImagePolicy(document, imagePolicy), baseDir)
 }
 
 func openExternalURL(destination string, opener func(string) error) error {

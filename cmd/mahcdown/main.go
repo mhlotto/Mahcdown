@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"mahcdown/internal/minimark"
+	"mahcdown/internal/source"
 	"mahcdown/internal/ui"
 )
 
@@ -35,7 +37,7 @@ func main() {
 		exitErr(err)
 	}
 
-	content, err := os.ReadFile(filepath.Clean(path))
+	content, err := source.ReadFile(filepath.Clean(path), minimark.DefaultMaxSourceBytes)
 	if err != nil {
 		exitErr(fmt.Errorf("read file: %w", err))
 	}

@@ -207,6 +207,24 @@ func TestRenderDocumentAppliesSelectedImagePolicyOnEveryRender(t *testing.T) {
 	}
 }
 
+func TestRenderDocumentPropagatesParserLimitsWithoutPartialHTML(t *testing.T) {
+	root := t.TempDir()
+	policy, err := minimark.NewRestrictedImagePolicy(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := minimark.Limits{MaxSourceBytes: 4}
+	for _, phase := range []string{"initial", "reload"} {
+		html, err := renderDocumentWithLimits("12345", root, policy, limits)
+		if !errors.Is(err, minimark.ErrSourceSizeLimit) {
+			t.Fatalf("%s render error = %v, want ErrSourceSizeLimit", phase, err)
+		}
+		if html != "" {
+			t.Fatalf("%s limit failure returned partial HTML: %q", phase, html)
+		}
+	}
+}
+
 func TestValidateExternalURL(t *testing.T) {
 	accepted := []string{
 		"http://example.com",
