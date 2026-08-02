@@ -4,6 +4,7 @@ import (
 	"errors"
 	"html"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -98,12 +99,12 @@ func TestInjectBaseDoesNotInsertSecondBaseElement(t *testing.T) {
 }
 
 func TestGeneratedPolicyPrecedesBaseAndStyle(t *testing.T) {
-	generated := minimark.RenderHTML(minimark.Document{Blocks: []minimark.Block{
+	generated := minimark.RenderHTMLWithImagePolicy(minimark.Document{Blocks: []minimark.Block{
 		minimark.Paragraph{Inlines: []minimark.Inline{
 			minimark.Image{URL: "images/local.png", Alt: "local"},
 			minimark.Image{URL: "https://example.com/remote.png", Alt: "remote"},
 		}},
-	}})
+	}}, minimark.AllowOutsideImagePolicy())
 	got, err := injectBase(generated, filepath.Join(t.TempDir(), `notes & "drafts"`))
 	if err != nil {
 		t.Fatalf("injectBase() error = %v", err)
@@ -157,6 +158,51 @@ func TestShortcutJSHandlesOnlyInertRenderedLinks(t *testing.T) {
 	for _, forbidden := range []string{`getAttribute('href')`, `.href`, `closest('a')`} {
 		if strings.Contains(js, forbidden) {
 			t.Errorf("shortcutJS() still reads or handles an active generic href via %q", forbidden)
+		}
+	}
+}
+
+func TestRenderDocumentAppliesSelectedImagePolicyOnEveryRender(t *testing.T) {
+	temp := t.TempDir()
+	root := filepath.Join(temp, "document")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(temp, "outside-image.png")
+	if err := os.WriteFile(outside, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restricted, err := imagePolicyFor(root, Options{})
+	if err != nil {
+		t.Fatalf("imagePolicyFor(default) error = %v", err)
+	}
+	for _, content := range []string{
+		`![initial](../outside-image.png)`,
+		`![reloaded](../outside-image.png)`,
+	} {
+		got, err := renderDocument(content, root, restricted)
+		if err != nil {
+			t.Fatalf("renderDocument() error = %v", err)
+		}
+		if strings.Contains(got, `<img src=`) || !strings.Contains(got, `image-blocked`) {
+			t.Fatalf("restricted render allowed outside image: %s", got)
+		}
+	}
+
+	permissive, err := imagePolicyFor(root, Options{AllowOutsideLocalImages: true})
+	if err != nil {
+		t.Fatalf("imagePolicyFor(override) error = %v", err)
+	}
+	for _, content := range []string{
+		`![initial](../outside-image.png)`,
+		`![reloaded](../outside-image.png)`,
+	} {
+		got, err := renderDocument(content, root, permissive)
+		if err != nil {
+			t.Fatalf("renderDocument() error = %v", err)
+		}
+		if !strings.Contains(got, `<img src="../outside-image.png"`) {
+			t.Fatalf("outside-image override was not applied: %s", got)
 		}
 	}
 }

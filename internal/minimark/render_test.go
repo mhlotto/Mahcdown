@@ -271,7 +271,7 @@ func TestRenderLinkIsInertAndEscaped(t *testing.T) {
 }
 
 func renderImage(source, alt string) string {
-	return RenderHTML(Document{Blocks: []Block{
+	return RenderHTMLWithImagePolicy(Document{Blocks: []Block{
 		Paragraph{Inlines: []Inline{Image{URL: source, Alt: alt}}},
-	}})
+	}}, AllowOutsideImagePolicy())
 }

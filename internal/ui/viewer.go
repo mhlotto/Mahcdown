@@ -20,15 +20,24 @@ const (
 	initialHeight = 700
 )
 
+// Options configures viewer behavior.
+type Options struct {
+	AllowOutsideLocalImages bool
+}
+
 // Display opens a window, renders the provided markdown text, and supports reload/quit/zoom shortcuts.
-func Display(title, path, initialText string) error {
+func Display(title, path, initialText string, options Options) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("mahcdown currently targets macOS")
 	}
 
 	baseDir := filepath.Dir(path)
+	imagePolicy, err := imagePolicyFor(baseDir, options)
+	if err != nil {
+		return err
+	}
 	render := func(content string) (string, error) {
-		return injectBase(minimark.RenderHTML(minimark.Parse(content)), baseDir)
+		return renderDocument(content, baseDir, imagePolicy)
 	}
 
 	html, err := render(initialText)
@@ -74,6 +83,17 @@ func Display(title, path, initialText string) error {
 
 	w.Run()
 	return nil
+}
+
+func imagePolicyFor(baseDir string, options Options) (minimark.ImagePolicy, error) {
+	if options.AllowOutsideLocalImages {
+		return minimark.AllowOutsideImagePolicy(), nil
+	}
+	return minimark.NewRestrictedImagePolicy(baseDir)
+}
+
+func renderDocument(content, baseDir string, imagePolicy minimark.ImagePolicy) (string, error) {
+	return injectBase(minimark.RenderHTMLWithImagePolicy(minimark.Parse(content), imagePolicy), baseDir)
 }
 
 func openExternalURL(destination string, opener func(string) error) error {

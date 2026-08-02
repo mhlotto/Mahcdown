@@ -13,3 +13,14 @@ vibe trash, kehd. markdown viewah for mac, brah
 - Cmd+F: search (opens the find bar, Enter/Shift+Enter navigates)
 - Cmd+C: copy highlighted text
 - Cmd+= / Cmd+-: zoom in/out
+
+## Local images
+
+Local images are restricted to the Markdown document's directory tree by default. To allow a
+document broader access to local image files outside that directory, run:
+
+```text
+mahcdown --allow-outside-local-images <path-to-markdown-file>
+```
+
+Remote images remain blocked in both modes.

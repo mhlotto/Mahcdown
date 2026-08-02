@@ -3,7 +3,6 @@ package minimark
 import (
 	"fmt"
 	"html"
-	"net/url"
 	"strings"
 	"unicode"
 )
@@ -861,6 +860,11 @@ func parseCheckbox(s string) (checked bool, consumed int, ok bool) {
 
 // RenderHTML converts a Document AST into HTML.
 func RenderHTML(doc Document) string {
+	return RenderHTMLWithImagePolicy(doc, ImagePolicy{})
+}
+
+// RenderHTMLWithImagePolicy converts a Document AST into HTML using imagePolicy.
+func RenderHTMLWithImagePolicy(doc Document, imagePolicy ImagePolicy) string {
 	var buf strings.Builder
 	buf.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="`)
 	buf.WriteString(contentSecurityPolicy)
@@ -868,7 +872,7 @@ func RenderHTML(doc Document) string {
 	buf.WriteString(baseCSS)
 	buf.WriteString(`</style></head><body>`)
 	for _, blk := range doc.Blocks {
-		renderBlock(&buf, blk)
+		renderBlock(&buf, blk, imagePolicy)
 	}
 	buf.WriteString(`</body></html>`)
 	return buf.String()
@@ -893,11 +897,11 @@ li p{margin:0;}
 li > ul,li > ol{margin:2px 0 0 18px;}
 `
 
-func renderBlock(buf *strings.Builder, blk Block) {
+func renderBlock(buf *strings.Builder, blk Block, imagePolicy ImagePolicy) {
 	switch b := blk.(type) {
 	case Paragraph:
 		buf.WriteString("<p>")
-		renderInlines(buf, b.Inlines, true)
+		renderInlines(buf, b.Inlines, true, imagePolicy)
 		buf.WriteString("</p>")
 	case Heading:
 		level := b.Level
@@ -905,7 +909,7 @@ func renderBlock(buf *strings.Builder, blk Block) {
 			level = 1
 		}
 		fmt.Fprintf(buf, "<h%d>", level)
-		renderInlines(buf, b.Inlines, false)
+		renderInlines(buf, b.Inlines, false, imagePolicy)
 		fmt.Fprintf(buf, "</h%d>", level)
 	case HorizontalRule:
 		buf.WriteString("<hr/>")
@@ -925,7 +929,7 @@ func renderBlock(buf *strings.Builder, blk Block) {
 			buf.WriteString("<th")
 			writeAlign(buf, b.Aligns, i)
 			buf.WriteString(">")
-			renderInlines(buf, cell, false)
+			renderInlines(buf, cell, false, imagePolicy)
 			buf.WriteString("</th>")
 		}
 		buf.WriteString("</tr></thead><tbody>")
@@ -935,7 +939,7 @@ func renderBlock(buf *strings.Builder, blk Block) {
 				buf.WriteString("<td")
 				writeAlign(buf, b.Aligns, i)
 				buf.WriteString(">")
-				renderInlines(buf, cell, false)
+				renderInlines(buf, cell, false, imagePolicy)
 				buf.WriteString("</td>")
 			}
 			buf.WriteString("</tr>")
@@ -947,7 +951,7 @@ func renderBlock(buf *strings.Builder, blk Block) {
 			if i > 0 {
 				buf.WriteString("<br/>")
 			}
-			renderInlines(buf, line, false)
+			renderInlines(buf, line, false, imagePolicy)
 		}
 		buf.WriteString("</p></blockquote>")
 	case List:
@@ -962,7 +966,7 @@ func renderBlock(buf *strings.Builder, blk Block) {
 		}
 		for _, item := range b.Items {
 			buf.WriteString("<li>")
-			renderListItem(buf, item)
+			renderListItem(buf, item, imagePolicy)
 			buf.WriteString("</li>")
 		}
 		if b.Ordered {
@@ -975,7 +979,7 @@ func renderBlock(buf *strings.Builder, blk Block) {
 	}
 }
 
-func renderListItem(buf *strings.Builder, item ListItem) {
+func renderListItem(buf *strings.Builder, item ListItem, imagePolicy ImagePolicy) {
 	if len(item.Blocks) == 0 {
 		if item.HasCheckbox {
 			buf.WriteString(`<input type="checkbox" disabled class="checkbox"`)
@@ -996,10 +1000,10 @@ func renderListItem(buf *strings.Builder, item ListItem) {
 			}
 			buf.WriteString(`/>`)
 		}
-		renderInlines(buf, para.Inlines, true)
+		renderInlines(buf, para.Inlines, true, imagePolicy)
 		buf.WriteString("</p>")
 		for _, child := range item.Blocks[1:] {
-			renderBlock(buf, child)
+			renderBlock(buf, child, imagePolicy)
 		}
 		return
 	}
@@ -1012,7 +1016,7 @@ func renderListItem(buf *strings.Builder, item ListItem) {
 		buf.WriteString(`/>`)
 	}
 	for _, child := range item.Blocks {
-		renderBlock(buf, child)
+		renderBlock(buf, child, imagePolicy)
 	}
 }
 
@@ -1030,7 +1034,7 @@ func writeAlign(buf *strings.Builder, aligns []Align, idx int) {
 	}
 }
 
-func renderInlines(buf *strings.Builder, inlines []Inline, convertNewlines bool) {
+func renderInlines(buf *strings.Builder, inlines []Inline, convertNewlines bool, imagePolicy ImagePolicy) {
 	for _, inl := range inlines {
 		switch v := inl.(type) {
 		case Text:
@@ -1040,7 +1044,8 @@ func renderInlines(buf *strings.Builder, inlines []Inline, convertNewlines bool)
 			buf.WriteString(html.EscapeString(v.Text))
 			buf.WriteString("</code>")
 		case Image:
-			if !isAllowedLocalImageURL(v.URL) {
+			parsed, allowed := parseAllowedLocalImageURL(v.URL)
+			if !allowed || !imagePolicy.allows(parsed) {
 				buf.WriteString(`<span class="image-blocked" data-src="`)
 				buf.WriteString(html.EscapeString(v.URL))
 				buf.WriteString(`">[image blocked: `)
@@ -1067,11 +1072,11 @@ func renderInlines(buf *strings.Builder, inlines []Inline, convertNewlines bool)
 			buf.WriteString(`/>`)
 		case Strong:
 			buf.WriteString("<strong>")
-			renderInlines(buf, v.Inlines, convertNewlines)
+			renderInlines(buf, v.Inlines, convertNewlines, imagePolicy)
 			buf.WriteString("</strong>")
 		case Emphasis:
 			buf.WriteString("<em>")
-			renderInlines(buf, v.Inlines, convertNewlines)
+			renderInlines(buf, v.Inlines, convertNewlines, imagePolicy)
 			buf.WriteString("</em>")
 		default:
 			// ignore unknown inline
@@ -1091,21 +1096,4 @@ func writeEscapedWithNewlines(buf *strings.Builder, text string, convertNewlines
 		}
 		buf.WriteString(html.EscapeString(part))
 	}
-}
-
-func isAllowedLocalImageURL(source string) bool {
-	if source == "" || source != strings.TrimSpace(source) || strings.Contains(source, `\`) {
-		return false
-	}
-	parsed, err := url.Parse(source)
-	if err != nil {
-		return false
-	}
-	if parsed.Scheme != "" || parsed.Host != "" || parsed.User != nil || parsed.Opaque != "" {
-		return false
-	}
-	if parsed.Path == "" || strings.HasPrefix(parsed.Path, "/") || strings.Contains(parsed.Path, `\`) {
-		return false
-	}
-	return true
 }
