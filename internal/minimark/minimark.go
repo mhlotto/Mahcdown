@@ -5,6 +5,7 @@ import (
 	"html"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Document represents a parsed MiniMark document.
@@ -838,7 +839,8 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 	if !state.allowDepth(depth) {
 		return nil
 	}
-	var out []Inline
+	sequence := &inlineSequence{}
+	var firstDelimiter, lastDelimiter *asteriskDelimiter
 	i := 0
 	textStart := 0
 	atLineStart := true
@@ -846,17 +848,12 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 		if end <= textStart {
 			return true
 		}
-		if !state.consumeItem() {
-			return false
-		}
-		out = append(out, Text{Text: text[textStart:end]})
-		return true
+		return sequence.append(state, Text{Text: text[textStart:end]}, 0) != nil
 	}
 	appendInline := func(inline Inline, consumed int) bool {
-		if !flushText(i) || !state.consumeItem() {
+		if !flushText(i) || sequence.append(state, inline, 0) == nil {
 			return false
 		}
-		out = append(out, inline)
 		i += consumed
 		textStart = i
 		atLineStart = false
@@ -897,41 +894,30 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 			}
 		}
 
-		// Strong
-		if strings.HasPrefix(text[i:], "**") {
-			if content, consumed, ok := parseDelimited(text[i+2:], "**"); ok && content != "" && !strings.ContainsRune(content, '\n') {
-				if !flushText(i) || !state.consumeItem() {
-					break
-				}
-				children := parseInlines(state, content, depth+1)
-				if state.err != nil {
-					break
-				}
-				out = append(out, Strong{Inlines: children})
-				i += 2 + consumed
-				textStart = i
-				atLineStart = false
-				continue
-			}
-		}
-
-		// Emphasis
 		if text[i] == '*' {
-			if content, consumed, ok := parseDelimitedSingleStar(text[i+1:]); ok && content != "" && !strings.ContainsRune(content, '\n') {
-				if !flushText(i) || !state.consumeItem() {
-					break
-				}
-				children := parseInlines(state, content, depth+1)
-				if state.err != nil {
-					break
-				}
-				out = append(out, Emphasis{Inlines: children})
-				i += 1 + consumed
-				textStart = i
-				atLineStart = false
-				continue
+			if !flushText(i) {
+				break
 			}
-			// Unmatched '*' becomes text.
+			runLength := asteriskRunLength(text, i)
+			node := sequence.append(state, Text{Text: text[i : i+runLength]}, 0)
+			if node == nil || !state.consumeItem() {
+				break
+			}
+			canOpen, canClose := classifyAsteriskRun(text, i, i+runLength)
+			delimiter := &asteriskDelimiter{
+				node: node, originalLength: runLength, length: runLength,
+				canOpen: canOpen, canClose: canClose, prev: lastDelimiter,
+			}
+			if lastDelimiter != nil {
+				lastDelimiter.next = delimiter
+			} else {
+				firstDelimiter = delimiter
+			}
+			lastDelimiter = delimiter
+			i += runLength
+			textStart = i
+			atLineStart = false
+			continue
 		}
 
 		// Bare URL
@@ -946,7 +932,227 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 		i++
 	}
 	flushText(i)
-	return out
+	if state.err == nil {
+		processAsteriskDelimiters(state, sequence, firstDelimiter, depth)
+	}
+	if state.err != nil {
+		return nil
+	}
+	return sequence.inlines()
+}
+
+type inlineNode struct {
+	inline Inline
+	depth  int
+	prev   *inlineNode
+	next   *inlineNode
+}
+
+type inlineSequence struct {
+	first *inlineNode
+	last  *inlineNode
+}
+
+func (sequence *inlineSequence) append(state *parserState, inline Inline, depth int) *inlineNode {
+	if !state.consumeItem() {
+		return nil
+	}
+	node := &inlineNode{inline: inline, depth: depth, prev: sequence.last}
+	if sequence.last != nil {
+		sequence.last.next = node
+	} else {
+		sequence.first = node
+	}
+	sequence.last = node
+	return node
+}
+
+func (sequence *inlineSequence) inlines() []Inline {
+	var inlines []Inline
+	for node := sequence.first; node != nil; node = node.next {
+		if text, ok := node.inline.(Text); ok && text.Text == "" {
+			continue
+		}
+		inlines = appendMergedInline(inlines, node.inline)
+	}
+	return inlines
+}
+
+func appendMergedInline(inlines []Inline, inline Inline) []Inline {
+	text, isText := inline.(Text)
+	if !isText || len(inlines) == 0 {
+		return append(inlines, inline)
+	}
+	previous, previousIsText := inlines[len(inlines)-1].(Text)
+	if !previousIsText {
+		return append(inlines, inline)
+	}
+	previous.Text += text.Text
+	inlines[len(inlines)-1] = previous
+	return inlines
+}
+
+type asteriskDelimiter struct {
+	node           *inlineNode
+	originalLength int
+	length         int
+	canOpen        bool
+	canClose       bool
+	prev           *asteriskDelimiter
+	next           *asteriskDelimiter
+}
+
+func asteriskRunLength(text string, start int) int {
+	end := start
+	for end < len(text) && text[end] == '*' {
+		end++
+	}
+	return end - start
+}
+
+func classifyAsteriskRun(text string, start, end int) (canOpen, canClose bool) {
+	beforeWhitespace, beforePunctuation := inlineRuneClassBefore(text, start)
+	afterWhitespace, afterPunctuation := inlineRuneClassAfter(text, end)
+	leftFlanking := !afterWhitespace && (!afterPunctuation || beforeWhitespace || beforePunctuation)
+	rightFlanking := !beforeWhitespace && (!beforePunctuation || afterWhitespace || afterPunctuation)
+	return leftFlanking, rightFlanking
+}
+
+func inlineRuneClassBefore(text string, offset int) (whitespace, punctuation bool) {
+	if offset == 0 {
+		return true, false
+	}
+	r, _ := utf8.DecodeLastRuneInString(text[:offset])
+	return unicode.IsSpace(r), unicode.IsPunct(r) || unicode.IsSymbol(r)
+}
+
+func inlineRuneClassAfter(text string, offset int) (whitespace, punctuation bool) {
+	if offset == len(text) {
+		return true, false
+	}
+	r, _ := utf8.DecodeRuneInString(text[offset:])
+	return unicode.IsSpace(r), unicode.IsPunct(r) || unicode.IsSymbol(r)
+}
+
+func processAsteriskDelimiters(state *parserState, sequence *inlineSequence, first *asteriskDelimiter, baseDepth int) {
+	var openersBottom [6]*asteriskDelimiter
+	for closer := first; closer != nil && state.err == nil; {
+		next := closer.next
+		if !closer.canClose {
+			closer = next
+			continue
+		}
+		bottomIndex := closer.length % 3
+		if closer.canOpen {
+			bottomIndex += 3
+		}
+		opener := closer.prev
+		for opener != nil && opener != openersBottom[bottomIndex] {
+			if opener.canOpen && !violatesRuleOfThree(opener, closer) {
+				break
+			}
+			opener = opener.prev
+		}
+		if opener == nil || opener == openersBottom[bottomIndex] {
+			openersBottom[bottomIndex] = closer.prev
+			if !closer.canOpen {
+				removeAsteriskDelimiter(closer)
+			}
+			closer = next
+			continue
+		}
+
+		use := 1
+		if opener.length >= 2 && closer.length >= 2 {
+			use = 2
+		}
+		if !wrapAsteriskSpan(state, sequence, opener, closer, use, baseDepth) {
+			return
+		}
+		for delimiter := opener.next; delimiter != closer; {
+			remove := delimiter
+			delimiter = delimiter.next
+			removeAsteriskDelimiter(remove)
+		}
+		if opener.length == 0 {
+			removeAsteriskDelimiter(opener)
+		}
+		if closer.length == 0 {
+			removeAsteriskDelimiter(closer)
+			closer = next
+		}
+	}
+}
+
+func violatesRuleOfThree(opener, closer *asteriskDelimiter) bool {
+	if !closer.canOpen && !opener.canClose {
+		return false
+	}
+	sum := opener.originalLength + closer.originalLength
+	return sum%3 == 0 && (opener.originalLength%3 != 0 || closer.originalLength%3 != 0)
+}
+
+func wrapAsteriskSpan(state *parserState, sequence *inlineSequence, opener, closer *asteriskDelimiter, use, baseDepth int) bool {
+	childCount := 0
+	childDepth := 0
+	for node := opener.node.next; node != closer.node; node = node.next {
+		if text, ok := node.inline.(Text); ok && text.Text == "" {
+			continue
+		}
+		childCount++
+		if node.depth > childDepth {
+			childDepth = node.depth
+		}
+	}
+	containerDepth := childDepth + 1
+	if !state.allowDepth(baseDepth+containerDepth) || !state.consumeItem() {
+		return false
+	}
+	children := make([]Inline, 0, childCount)
+	for node := opener.node.next; node != closer.node; node = node.next {
+		if text, ok := node.inline.(Text); ok && text.Text == "" {
+			continue
+		}
+		children = appendMergedInline(children, node.inline)
+	}
+	var inline Inline = Emphasis{Inlines: children}
+	if use == 2 {
+		inline = Strong{Inlines: children}
+	}
+	container := &inlineNode{inline: inline, depth: containerDepth, prev: opener.node, next: closer.node}
+	opener.node.next = container
+	closer.node.prev = container
+	setDelimiterText(opener, opener.length-use, false)
+	setDelimiterText(closer, closer.length-use, true)
+	if opener.node.prev == nil {
+		sequence.first = opener.node
+	}
+	if closer.node.next == nil {
+		sequence.last = closer.node
+	}
+	return true
+}
+
+func setDelimiterText(delimiter *asteriskDelimiter, remaining int, consumeFromStart bool) {
+	text := delimiter.node.inline.(Text).Text
+	if consumeFromStart {
+		text = text[len(text)-remaining:]
+	} else {
+		text = text[:remaining]
+	}
+	delimiter.node.inline = Text{Text: text}
+	delimiter.length = remaining
+}
+
+func removeAsteriskDelimiter(delimiter *asteriskDelimiter) {
+	if delimiter.prev != nil {
+		delimiter.prev.next = delimiter.next
+	}
+	if delimiter.next != nil {
+		delimiter.next.prev = delimiter.prev
+	}
+	delimiter.prev = nil
+	delimiter.next = nil
 }
 
 func parseImage(s string) (alt, url string, consumed int, ok bool) {
@@ -983,28 +1189,6 @@ func parseAutoLink(s string) (url string, consumed int, ok bool) {
 	content := s[1:end]
 	if strings.HasPrefix(content, "http://") || strings.HasPrefix(content, "https://") {
 		return content, end + 1, true
-	}
-	return "", 0, false
-}
-
-func parseDelimited(s string, delim string) (content string, consumed int, ok bool) {
-	end := strings.LastIndex(s, delim)
-	if end < 0 {
-		return "", 0, false
-	}
-	return s[:end], end + len(delim), true
-}
-
-func parseDelimitedSingleStar(s string) (content string, consumed int, ok bool) {
-	for idx := 0; idx < len(s); idx++ {
-		if s[idx] != '*' {
-			continue
-		}
-		// closing delimiter must be a single star, not part of "**" (either side)
-		if (idx+1 < len(s) && s[idx+1] == '*') || (idx > 0 && s[idx-1] == '*') {
-			continue
-		}
-		return s[:idx], idx + 1, true
 	}
 	return "", 0, false
 }

@@ -220,6 +220,16 @@ Inline parsing applies inside:
 
 Inline parsing does **not** apply inside fenced code blocks.
 
+Asterisk delimiter runs provide `*emphasis*` and `**strong emphasis**`. MiniMark classifies runs
+with Unicode left- and right-flanking rules and resolves them with a delimiter stack following the
+CommonMark asterisk emphasis algorithm. Underscore emphasis is not supported, and MiniMark does
+not claim complete CommonMark compatibility. Unmatched delimiters remain literal.
+
+Emphasis may cross a soft line break inside one inline-bearing block. Delimiter matching resets at
+paragraph, heading, list-item, blockquote-child, and table-cell boundaries. Successfully parsed
+code spans, images, URLs, checkboxes, and other atomic inline constructs are opaque to delimiter
+processing.
+
 ---
 
 ## 4. Escapes

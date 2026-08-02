@@ -36,8 +36,8 @@ func TestParseItemLimitNodeBoundaries(t *testing.T) {
 		{name: "image inline", input: "![alt](image.png)", nodes: 5},
 		{name: "link inline", input: "https://example.com", nodes: 5},
 		{name: "checkbox inline", input: "[ ] task", nodes: 6},
-		{name: "strong inline", input: "**bold**", nodes: 6},
-		{name: "emphasis inline", input: "*italic*", nodes: 6},
+		{name: "strong inline", input: "**bold**", nodes: 10},
+		{name: "emphasis inline", input: "*italic*", nodes: 10},
 		{name: "code block", input: "```\ncode\n```", nodes: 6},
 		{name: "block heavy", input: "---\n---\n", nodes: 6},
 	}
