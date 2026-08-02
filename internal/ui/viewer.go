@@ -54,11 +54,11 @@ func Display(title, path, initialText string, options Options) error {
 
 	// Bind reload: re-read file, re-render, and update HTML.
 	_ = w.Bind("mahcdownReload", func() (string, error) {
-		data, err := source.ReadFile(path, minimark.DefaultMaxSourceBytes)
+		content, err := source.ReadTextFile(path, minimark.DefaultMaxSourceBytes)
 		if err != nil {
 			return "", err
 		}
-		newHTML, err := render(string(data))
+		newHTML, err := render(content)
 		if err != nil {
 			return "", err
 		}

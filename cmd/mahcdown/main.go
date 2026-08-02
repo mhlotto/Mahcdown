@@ -37,14 +37,14 @@ func main() {
 		exitErr(err)
 	}
 
-	content, err := source.ReadFile(filepath.Clean(path), minimark.DefaultMaxSourceBytes)
+	content, err := source.ReadTextFile(filepath.Clean(path), minimark.DefaultMaxSourceBytes)
 	if err != nil {
 		exitErr(fmt.Errorf("read file: %w", err))
 	}
 
 	title := fmt.Sprintf("Mahcdown - %s", filepath.Base(path))
 
-	if err := ui.Display(title, path, string(content), ui.Options{
+	if err := ui.Display(title, path, content, ui.Options{
 		AllowOutsideLocalImages: options.allowOutsideLocalImages,
 	}); err != nil {
 		exitErr(err)

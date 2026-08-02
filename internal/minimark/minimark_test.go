@@ -180,7 +180,7 @@ func TestInlinePrecedence(t *testing.T) {
 				Url{URL: "https://ex.com", Text: "https://ex.com"},
 				Text{Text: " and "},
 				Url{URL: "https://ex.com/path", Text: "https://ex.com/path"},
-				Text{Text: "."},
+				Text{Text: ")."},
 			},
 		},
 		{

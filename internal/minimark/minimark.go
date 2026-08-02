@@ -1214,10 +1214,6 @@ func parseBareURL(s string) (string, int) {
 		}
 	}
 
-	// Consume the stop character if it was a closing delimiter to avoid emitting it as text.
-	if end < len(s) && strings.ContainsRune(")]}>\"'", rune(s[end])) {
-		end++
-	}
 	return url, end
 }
 
