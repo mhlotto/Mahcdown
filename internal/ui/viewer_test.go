@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"mahcdown/internal/minimark"
 )
 
 const testHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>`
@@ -91,6 +93,46 @@ func TestInjectBaseDoesNotInsertSecondBaseElement(t *testing.T) {
 	}
 	if got != input {
 		t.Fatalf("injectBase() changed HTML with an existing base element: %q", got)
+	}
+}
+
+func TestGeneratedPolicyPrecedesBaseAndStyle(t *testing.T) {
+	generated := minimark.RenderHTML(minimark.Document{Blocks: []minimark.Block{
+		minimark.Paragraph{Inlines: []minimark.Inline{
+			minimark.Image{URL: "images/local.png", Alt: "local"},
+			minimark.Image{URL: "https://example.com/remote.png", Alt: "remote"},
+		}},
+	}})
+	got, err := injectBase(generated, filepath.Join(t.TempDir(), `notes & "drafts"`))
+	if err != nil {
+		t.Fatalf("injectBase() error = %v", err)
+	}
+
+	cspAt := strings.Index(got, `<meta http-equiv="Content-Security-Policy"`)
+	baseAt := strings.Index(got, `<base href="`)
+	styleAt := strings.Index(got, `<style>`)
+	if cspAt < 0 || baseAt < 0 || styleAt < 0 || !(cspAt < baseAt && baseAt < styleAt) {
+		t.Fatalf("expected CSP before base before style, indexes: CSP=%d base=%d style=%d", cspAt, baseAt, styleAt)
+	}
+	if strings.Count(got, `http-equiv="Content-Security-Policy"`) != 1 {
+		t.Fatalf("expected exactly one CSP meta element: %s", got)
+	}
+	if !strings.Contains(got, `notes%20&amp;%20%22drafts%22/`) {
+		t.Fatalf("base URL lost URL encoding or HTML escaping: %s", got)
+	}
+	if !strings.Contains(got, `<img src="images/local.png" alt="local"/>`) {
+		t.Fatalf("ordinary local image was not preserved: %s", got)
+	}
+	if strings.Contains(got, `<img src="https://example.com/remote.png"`) || !strings.Contains(got, `[image blocked: remote]`) {
+		t.Fatalf("remote image was not blocked: %s", got)
+	}
+
+	second, err := injectBase(got, filepath.Join(t.TempDir(), "other"))
+	if err != nil {
+		t.Fatalf("second injectBase() error = %v", err)
+	}
+	if strings.Count(second, `http-equiv="Content-Security-Policy"`) != 1 {
+		t.Fatalf("reprocessing duplicated CSP: %s", second)
 	}
 }
 

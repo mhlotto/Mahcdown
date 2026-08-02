@@ -862,7 +862,9 @@ func parseCheckbox(s string) (checked bool, consumed int, ok bool) {
 // RenderHTML converts a Document AST into HTML.
 func RenderHTML(doc Document) string {
 	var buf strings.Builder
-	buf.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>`)
+	buf.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="`)
+	buf.WriteString(contentSecurityPolicy)
+	buf.WriteString(`"><style>`)
 	buf.WriteString(baseCSS)
 	buf.WriteString(`</style></head><body>`)
 	for _, blk := range doc.Blocks {
@@ -871,6 +873,8 @@ func RenderHTML(doc Document) string {
 	buf.WriteString(`</body></html>`)
 	return buf.String()
 }
+
+const contentSecurityPolicy = "default-src 'none'; base-uri file:; img-src file:; style-src 'unsafe-inline'; script-src 'none'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; form-action 'none'"
 
 const baseCSS = `
 body{font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;line-height:1.6;margin:16px;color:#111;background:#fff;}

@@ -119,7 +119,75 @@ func TestRenderHTML(t *testing.T) {
 }
 
 func htmlWrap(body string) string {
-	return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>` + baseCSS + `</style></head><body>` + body + `</body></html>`
+	return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="` + contentSecurityPolicy + `"><style>` + baseCSS + `</style></head><body>` + body + `</body></html>`
+}
+
+func TestRenderHTMLContentSecurityPolicy(t *testing.T) {
+	got := RenderHTML(Document{})
+	const prefix = `<meta http-equiv="Content-Security-Policy" content="`
+	if strings.Count(got, prefix) != 1 {
+		t.Fatalf("CSP meta count = %d, want 1", strings.Count(got, prefix))
+	}
+	start := strings.Index(got, prefix) + len(prefix)
+	end := strings.Index(got[start:], `">`)
+	if end < 0 {
+		t.Fatalf("CSP content attribute is not structurally closed: %s", got)
+	}
+
+	directives := make(map[string][]string)
+	for _, raw := range strings.Split(got[start:start+end], ";") {
+		fields := strings.Fields(raw)
+		if len(fields) == 0 {
+			continue
+		}
+		if _, exists := directives[fields[0]]; exists {
+			t.Fatalf("duplicate CSP directive %q", fields[0])
+		}
+		directives[fields[0]] = fields[1:]
+	}
+
+	expected := map[string][]string{
+		"default-src":  {"'none'"},
+		"base-uri":     {"file:"},
+		"img-src":      {"file:"},
+		"style-src":    {"'unsafe-inline'"},
+		"script-src":   {"'none'"},
+		"connect-src":  {"'none'"},
+		"font-src":     {"'none'"},
+		"media-src":    {"'none'"},
+		"object-src":   {"'none'"},
+		"frame-src":    {"'none'"},
+		"child-src":    {"'none'"},
+		"worker-src":   {"'none'"},
+		"manifest-src": {"'none'"},
+		"form-action":  {"'none'"},
+	}
+	if len(directives) != len(expected) {
+		t.Fatalf("CSP directive count = %d, want %d: %#v", len(directives), len(expected), directives)
+	}
+	for name, wantSources := range expected {
+		gotSources, exists := directives[name]
+		if !exists || strings.Join(gotSources, " ") != strings.Join(wantSources, " ") {
+			t.Errorf("CSP %s = %q, want %q", name, gotSources, wantSources)
+		}
+	}
+
+	for name, sources := range directives {
+		for _, source := range sources {
+			switch source {
+			case "http:", "https:", "ws:", "wss:", "data:", "blob:", "*", "'unsafe-eval'":
+				t.Errorf("CSP directive %s contains forbidden source %q", name, source)
+			case "file:":
+				if name != "base-uri" && name != "img-src" {
+					t.Errorf("CSP directive %s unexpectedly allows file:", name)
+				}
+			case "'unsafe-inline'":
+				if name != "style-src" {
+					t.Errorf("CSP directive %s unexpectedly allows unsafe-inline", name)
+				}
+			}
+		}
+	}
 }
 
 func TestRenderImageSourceAllowlist(t *testing.T) {

@@ -88,13 +88,17 @@ func injectBase(html, baseDir string) (string, error) {
 	}
 	urlPath := strings.TrimRight(filepath.ToSlash(absoluteDir), "/") + "/"
 	base := stdhtml.EscapeString((&url.URL{Scheme: "file", Path: urlPath}).String())
+	baseElement := `<base href="` + base + `">`
+	if styleAt := strings.Index(strings.ToLower(html), "<style>"); styleAt >= 0 {
+		return html[:styleAt] + baseElement + html[styleAt:], nil
+	}
 	const headTag = "<head>"
 	if idx := strings.Index(strings.ToLower(html), headTag); idx >= 0 {
 		insertAt := idx + len(headTag)
-		return html[:insertAt] + `<base href="` + base + `">` + html[insertAt:], nil
+		return html[:insertAt] + baseElement + html[insertAt:], nil
 	}
 	// Fallback: prepend.
-	return `<base href="` + base + `">` + html, nil
+	return baseElement + html, nil
 }
 
 func shortcutJS() string {
