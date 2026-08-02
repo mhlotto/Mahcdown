@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	stdhtml "html"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,11 +27,14 @@ func Display(title, path, initialText string) error {
 	}
 
 	baseDir := filepath.Dir(path)
-	render := func(content string) string {
+	render := func(content string) (string, error) {
 		return injectBase(minimark.RenderHTML(minimark.Parse(content)), baseDir)
 	}
 
-	html := render(initialText)
+	html, err := render(initialText)
+	if err != nil {
+		return err
+	}
 
 	w := webview.New(false)
 	defer w.Destroy()
@@ -45,7 +49,10 @@ func Display(title, path, initialText string) error {
 		if err != nil {
 			return "", err
 		}
-		newHTML := render(string(data))
+		newHTML, err := render(string(data))
+		if err != nil {
+			return "", err
+		}
 		w.Dispatch(func() { w.SetHtml(newHTML) })
 		return "ok", nil
 	})
@@ -68,22 +75,26 @@ func Display(title, path, initialText string) error {
 	return nil
 }
 
-func injectBase(html, baseDir string) string {
+func injectBase(html, baseDir string) (string, error) {
 	if baseDir == "" {
-		return html
+		return html, nil
 	}
-	base := `file://` + strings.TrimRight(filepath.ToSlash(baseDir), "/") + `/`
-	base = stdhtml.EscapeString(base)
 	if strings.Contains(html, "<base ") {
-		return html
+		return html, nil
 	}
+	absoluteDir, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve base directory: %w", err)
+	}
+	urlPath := strings.TrimRight(filepath.ToSlash(absoluteDir), "/") + "/"
+	base := stdhtml.EscapeString((&url.URL{Scheme: "file", Path: urlPath}).String())
 	const headTag = "<head>"
 	if idx := strings.Index(strings.ToLower(html), headTag); idx >= 0 {
 		insertAt := idx + len(headTag)
-		return html[:insertAt] + `<base href="` + base + `">` + html[insertAt:]
+		return html[:insertAt] + `<base href="` + base + `">` + html[insertAt:], nil
 	}
 	// Fallback: prepend.
-	return `<base href="` + base + `">` + html
+	return `<base href="` + base + `">` + html, nil
 }
 
 func shortcutJS() string {
