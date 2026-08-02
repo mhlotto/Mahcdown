@@ -63,9 +63,8 @@ func TestParseBlocks(t *testing.T) {
 			name:  "blockquote stops at blank line",
 			input: "> first\n> second\n\nthird\n",
 			expected: Document{Blocks: []Block{
-				BlockQuote{Lines: [][]Inline{
-					{Text{Text: "first"}},
-					{Text{Text: "second"}},
+				BlockQuote{Blocks: []Block{
+					Paragraph{Inlines: []Inline{Text{Text: "first\nsecond"}}},
 				}},
 				Paragraph{Inlines: []Inline{Text{Text: "third"}}},
 			}},

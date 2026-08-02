@@ -49,9 +49,8 @@ func TestRenderHTML(t *testing.T) {
 		{
 			name: "blockquote joins lines",
 			doc: Document{Blocks: []Block{
-				BlockQuote{Lines: [][]Inline{
-					{Text{Text: "first"}},
-					{Text{Text: "second"}},
+				BlockQuote{Blocks: []Block{
+					Paragraph{Inlines: []Inline{Text{Text: "first\nsecond"}}},
 				}},
 			}},
 			want: `<blockquote><p>first<br/>second</p></blockquote>`,

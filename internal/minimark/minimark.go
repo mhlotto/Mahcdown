@@ -69,9 +69,9 @@ type ListItem struct {
 	Blocks      []Block
 }
 
-// BlockQuote is a blockquote containing inline-parsed lines.
+// BlockQuote is a blockquote containing normal block nodes.
 type BlockQuote struct {
-	Lines [][]Inline
+	Blocks []Block
 }
 
 // Paragraph is a paragraph block.
@@ -703,14 +703,12 @@ func isBlockQuoteLine(line string) bool {
 }
 
 func parseBlockQuote(state *parserState, lines []string, start int, baseIndent int, depth int, blocks *[]Block) (int, []Block) {
-	var quoteLines [][]Inline
-	for i := start; i < len(lines) && state.err == nil; i++ {
+	var quoteLines []string
+	i := start
+	for ; i < len(lines) && state.err == nil; i++ {
 		line := trimIndent(lines[i], baseIndent)
-		if isBlank(line) {
-			return i + 1, appendBlockQuote(*blocks, quoteLines)
-		}
 		if !isBlockQuoteLine(line) {
-			return i, appendBlockQuote(*blocks, quoteLines)
+			break
 		}
 		trimLead := leadingSpacesCount(line)
 		content := line[trimLead+1:]
@@ -720,13 +718,21 @@ func parseBlockQuote(state *parserState, lines []string, start int, baseIndent i
 		if !state.consumeItem() { // Retained blockquote line.
 			return i, *blocks
 		}
-		quoteLines = append(quoteLines, parseInlines(state, content, depth+1))
+		quoteLines = append(quoteLines, content)
 	}
-	return len(lines), appendBlockQuote(*blocks, quoteLines)
+	childBlocks, next := parseBlocks(state, quoteLines, 0, 0, depth+1)
+	if state.err != nil {
+		return i, *blocks
+	}
+	if next != len(quoteLines) {
+		state.err = fmt.Errorf("parse blockquote: child parser stopped at line %d of %d", next, len(quoteLines))
+		return i, *blocks
+	}
+	return i, appendBlockQuote(*blocks, childBlocks)
 }
 
-func appendBlockQuote(blocks []Block, lines [][]Inline) []Block {
-	return append(blocks, BlockQuote{Lines: lines})
+func appendBlockQuote(blocks []Block, children []Block) []Block {
+	return append(blocks, BlockQuote{Blocks: children})
 }
 
 func parseParagraph(state *parserState, lines []string, start int, baseIndent int, depth int, blocks *[]Block) (int, []Block) {
@@ -1133,14 +1139,11 @@ func renderBlock(buf *strings.Builder, blk Block, imagePolicy ImagePolicy) {
 		}
 		buf.WriteString("</tbody></table>")
 	case BlockQuote:
-		buf.WriteString("<blockquote><p>")
-		for i, line := range b.Lines {
-			if i > 0 {
-				buf.WriteString("<br/>")
-			}
-			renderInlines(buf, line, false, imagePolicy)
+		buf.WriteString("<blockquote>")
+		for _, child := range b.Blocks {
+			renderBlock(buf, child, imagePolicy)
 		}
-		buf.WriteString("</p></blockquote>")
+		buf.WriteString("</blockquote>")
 	case List:
 		if b.Ordered {
 			buf.WriteString("<ol")

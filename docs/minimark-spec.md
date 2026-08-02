@@ -184,7 +184,20 @@ ListItem {
 
 ## 2.6 Blockquote
 
-Identical to MiniMark 1.1, except that blockquotes may now contain lists.
+A blockquote is a contiguous sequence of lines that each contain a quote marker. A marker consists
+of zero to three spaces followed by `>`, with one optional space removed after the marker. Both
+`> text` and `>text` are accepted.
+
+Exactly one quote level is removed from each line, and the resulting lines are parsed recursively
+using the normal block parser. Blockquotes may therefore contain paragraphs, headings, lists,
+fenced code blocks, tables, horizontal rules, and nested blockquotes.
+
+`>` and `> ` are quoted blank lines and separate paragraphs inside the same blockquote. An
+unquoted line, including an unquoted blank line, terminates the contiguous blockquote region. Lazy
+continuation lines are not supported. Nested quotes may be written as either `>> text` or
+`> > text`.
+
+Parser nesting and parse-item safety limits apply recursively inside blockquotes.
 
 ---
 
@@ -201,7 +214,7 @@ Inline parsing rules are identical to MiniMark 1.1.
 Inline parsing applies inside:
 - Paragraphs
 - Headings
-- Blockquote lines
+- Inline-bearing blocks nested inside blockquotes
 - Table cells
 - List item paragraph content
 
