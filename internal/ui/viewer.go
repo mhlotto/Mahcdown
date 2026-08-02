@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	stdhtml "html"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,6 +73,7 @@ func injectBase(html, baseDir string) string {
 		return html
 	}
 	base := `file://` + strings.TrimRight(filepath.ToSlash(baseDir), "/") + `/`
+	base = stdhtml.EscapeString(base)
 	if strings.Contains(html, "<base ") {
 		return html
 	}
