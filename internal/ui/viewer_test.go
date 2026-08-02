@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"html"
 	"net/url"
 	"path/filepath"
@@ -157,6 +158,94 @@ func TestShortcutJSHandlesOnlyInertRenderedLinks(t *testing.T) {
 		if strings.Contains(js, forbidden) {
 			t.Errorf("shortcutJS() still reads or handles an active generic href via %q", forbidden)
 		}
+	}
+}
+
+func TestValidateExternalURL(t *testing.T) {
+	accepted := []string{
+		"http://example.com",
+		"https://example.com",
+		"HtTp://example.com",
+		"hTTps://example.com",
+		"https://example.com/path",
+		"https://example.com:8443/path",
+		"https://example.com/path?query=value#fragment",
+		"http://192.0.2.1/path",
+		"https://[2001:db8::1]/path",
+		"https://example.com/a%20path",
+		"https://例え.テスト/path",
+	}
+	for _, destination := range accepted {
+		t.Run("accept "+destination, func(t *testing.T) {
+			if err := validateExternalURL(destination); err != nil {
+				t.Fatalf("validateExternalURL() error = %v", err)
+			}
+		})
+	}
+
+	rejected := []string{
+		"",
+		"   ",
+		" https://example.com",
+		"https://example.com ",
+		"example.com",
+		"/relative/path",
+		"./relative",
+		"../relative",
+		"//example.com/path",
+		"file:///tmp/example",
+		"ftp://example.com/file",
+		"mailto:user@example.com",
+		"javascript:alert(1)",
+		"data:text/plain,test",
+		"blob:https://example.com/id",
+		"custom:example",
+		"http:///missing-host",
+		"https://",
+		"https://user:pass@example.com",
+		"http:example.com",
+		"https:example.com/path",
+		"https://example.com:bad/path",
+		`https:\\example.com\path`,
+		`https://example.com\path`,
+	}
+	for _, destination := range rejected {
+		t.Run("reject "+destination, func(t *testing.T) {
+			if err := validateExternalURL(destination); err == nil {
+				t.Fatal("validateExternalURL() error = nil")
+			}
+		})
+	}
+}
+
+func TestOpenExternalURLValidatesBeforeOpening(t *testing.T) {
+	var opened []string
+	opener := func(destination string) error {
+		opened = append(opened, destination)
+		return nil
+	}
+
+	valid := "https://example.com/path?query=value#fragment"
+	if err := openExternalURL(valid, opener); err != nil {
+		t.Fatalf("openExternalURL(valid) error = %v", err)
+	}
+	if len(opened) != 1 || opened[0] != valid {
+		t.Fatalf("opener calls = %q, want original URL %q", opened, valid)
+	}
+
+	if err := openExternalURL("file:///tmp/secret", opener); err == nil {
+		t.Fatal("openExternalURL(rejected) error = nil")
+	}
+	if len(opened) != 1 {
+		t.Fatalf("opener was called for rejected URL: %q", opened)
+	}
+}
+
+func TestOpenExternalURLPropagatesOpenerError(t *testing.T) {
+	wantErr := errors.New("opener failed")
+	err := openExternalURL("https://example.com", func(string) error { return wantErr })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("openExternalURL() error = %v, want wrapped %v", err, wantErr)
 	}
 }
 

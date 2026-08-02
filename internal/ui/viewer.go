@@ -63,15 +63,52 @@ func Display(title, path, initialText string) error {
 	})
 
 	// Bind external link opener (only used after user confirmation in JS).
-	_ = w.Bind("mahcdownOpenLink", func(url string) {
-		// Best-effort open; ignore errors to keep UI responsive.
-		_ = exec.Command("open", url).Start()
+	_ = w.Bind("mahcdownOpenLink", func(destination string) error {
+		return openExternalURL(destination, func(validatedURL string) error {
+			return exec.Command("open", validatedURL).Start()
+		})
 	})
 
 	// Inject JS to wire shortcuts and guarded link handling.
 	w.Init(shortcutJS())
 
 	w.Run()
+	return nil
+}
+
+func openExternalURL(destination string, opener func(string) error) error {
+	if err := validateExternalURL(destination); err != nil {
+		return err
+	}
+	if err := opener(destination); err != nil {
+		return fmt.Errorf("open external link: %w", err)
+	}
+	return nil
+}
+
+func validateExternalURL(destination string) error {
+	if destination == "" || destination != strings.TrimSpace(destination) {
+		return fmt.Errorf("invalid link destination: URL must not be empty or surrounded by whitespace")
+	}
+	parsed, err := url.Parse(destination)
+	if err != nil {
+		return fmt.Errorf("invalid link destination: malformed URL")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return fmt.Errorf("invalid link destination: unsupported URL scheme")
+	}
+	if parsed.Opaque != "" {
+		return fmt.Errorf("invalid link destination: opaque URLs are not allowed")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("invalid link destination: user information is not allowed")
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("invalid link destination: URL must include a host")
+	}
+	if strings.Contains(destination, `\`) {
+		return fmt.Errorf("invalid link destination: backslashes are not allowed")
+	}
 	return nil
 }
 
