@@ -3,6 +3,7 @@ package minimark
 import (
 	"fmt"
 	"html"
+	"net/url"
 	"strings"
 	"unicode"
 )
@@ -1034,7 +1035,7 @@ func renderInlines(buf *strings.Builder, inlines []Inline, convertNewlines bool)
 			buf.WriteString(html.EscapeString(v.Text))
 			buf.WriteString("</code>")
 		case Image:
-			if isExternalURL(v.URL) {
+			if !isAllowedLocalImageURL(v.URL) {
 				buf.WriteString(`<span class="image-blocked" data-src="`)
 				buf.WriteString(html.EscapeString(v.URL))
 				buf.WriteString(`">[image blocked: `)
@@ -1089,7 +1090,19 @@ func writeEscapedWithNewlines(buf *strings.Builder, text string, convertNewlines
 	}
 }
 
-func isExternalURL(u string) bool {
-	lower := strings.ToLower(u)
-	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+func isAllowedLocalImageURL(source string) bool {
+	if source == "" || source != strings.TrimSpace(source) || strings.Contains(source, `\`) {
+		return false
+	}
+	parsed, err := url.Parse(source)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "" || parsed.Host != "" || parsed.User != nil || parsed.Opaque != "" {
+		return false
+	}
+	if parsed.Path == "" || strings.HasPrefix(parsed.Path, "/") || strings.Contains(parsed.Path, `\`) {
+		return false
+	}
+	return true
 }

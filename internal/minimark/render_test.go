@@ -1,6 +1,10 @@
 package minimark
 
-import "testing"
+import (
+	"html"
+	"strings"
+	"testing"
+)
 
 func TestRenderHTML(t *testing.T) {
 	tests := []struct {
@@ -116,4 +120,71 @@ func TestRenderHTML(t *testing.T) {
 
 func htmlWrap(body string) string {
 	return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>` + baseCSS + `</style></head><body>` + body + `</body></html>`
+}
+
+func TestRenderImageSourceAllowlist(t *testing.T) {
+	rejected := []string{
+		"http://example.com/image.png",
+		"https://example.com/image.png",
+		"HtTp://example.com/image.png",
+		"hTTps://example.com/image.png",
+		"//example.com/image.png",
+		"ftp://example.com/image.png",
+		"data:image/png;base64,AAAA",
+		"javascript:alert(1)",
+		"file:///tmp/image.png",
+		"file://remote-host/path/image.png",
+		"custom-scheme:image.png",
+		"/images/photo.png",
+		`\\example.com\image.png`,
+		"  https://example.com/image.png",
+		"?query",
+		"#fragment",
+		"?query#fragment",
+	}
+	for _, source := range rejected {
+		t.Run("reject "+source, func(t *testing.T) {
+			got := renderImage(source, `<unsafe & alt>`)
+			if strings.Contains(got, `<img src=`) {
+				t.Fatalf("rejected source appeared in an active image: %s", got)
+			}
+			if !strings.Contains(got, `<span class="image-blocked"`) {
+				t.Fatalf("rejected source did not use blocked-image output: %s", got)
+			}
+			if !strings.Contains(got, `[image blocked: &lt;unsafe &amp; alt&gt;]`) {
+				t.Fatalf("blocked image did not preserve escaped alt text: %s", got)
+			}
+		})
+	}
+
+	allowed := []string{
+		"image.png",
+		"images/photo.png",
+		"../images/photo.png",
+		"photo with spaces.png",
+		"photo%20encoded.png",
+		"写真.png",
+		"./images/./photo.png",
+		"image.png?version=2",
+		"image.svg#icon",
+		"images/photo.png?version=2#preview",
+	}
+	for _, source := range allowed {
+		t.Run("allow "+source, func(t *testing.T) {
+			got := renderImage(source, `<safe & alt>`)
+			want := `<img src="` + html.EscapeString(source) + `" alt="&lt;safe &amp; alt&gt;"/>`
+			if !strings.Contains(got, want) {
+				t.Fatalf("allowed source was not rendered as expected:\nwant: %s\ngot:  %s", want, got)
+			}
+			if strings.Contains(got, `<span class="image-blocked"`) {
+				t.Fatalf("allowed source was blocked: %s", got)
+			}
+		})
+	}
+}
+
+func renderImage(source, alt string) string {
+	return RenderHTML(Document{Blocks: []Block{
+		Paragraph{Inlines: []Inline{Image{URL: source, Alt: alt}}},
+	}})
 }
