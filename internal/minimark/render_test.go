@@ -72,7 +72,7 @@ func TestRenderHTML(t *testing.T) {
 					Url{URL: "https://example.com", Text: "https://example.com"},
 				}},
 			}},
-			want: `<p><a href="https://example.com" data-href="https://example.com" rel="noreferrer noopener">https://example.com</a></p>`,
+			want: `<p><a class="mahcdown-link" role="link" tabindex="0" data-mahcdown-href="https://example.com">https://example.com</a></p>`,
 		},
 		{
 			name: "checkbox rendering",
@@ -248,6 +248,25 @@ func TestRenderImageSourceAllowlist(t *testing.T) {
 				t.Fatalf("allowed source was blocked: %s", got)
 			}
 		})
+	}
+}
+
+func TestRenderLinkIsInertAndEscaped(t *testing.T) {
+	destination := `https://example.com/?q="quotes"&tag=<unsafe>&name=雪`
+	got := RenderHTML(Document{Blocks: []Block{
+		Paragraph{Inlines: []Inline{
+			Text{Text: "before "},
+			Url{URL: destination, Text: `<click & "go"> 雪`},
+			Text{Text: " after"},
+		}},
+	}})
+
+	want := `before <a class="mahcdown-link" role="link" tabindex="0" data-mahcdown-href="` + html.EscapeString(destination) + `">&lt;click &amp; &#34;go&#34;&gt; 雪</a> after`
+	if !strings.Contains(got, want) {
+		t.Fatalf("rendered link mismatch:\nwant: %s\ngot:  %s", want, got)
+	}
+	if strings.Contains(got, `href="`+destination+`"`) || strings.Contains(got, `<a href=`) {
+		t.Fatalf("real destination appeared in an active href: %s", got)
 	}
 }
 

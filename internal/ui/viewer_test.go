@@ -136,6 +136,30 @@ func TestGeneratedPolicyPrecedesBaseAndStyle(t *testing.T) {
 	}
 }
 
+func TestShortcutJSHandlesOnlyInertRenderedLinks(t *testing.T) {
+	js := shortcutJS()
+	required := []string{
+		`a.mahcdown-link[data-mahcdown-href]`,
+		`link.getAttribute('data-mahcdown-href')`,
+		`e.preventDefault()`,
+		`document.body.addEventListener('click'`,
+		`document.body.addEventListener('keydown'`,
+		`e.key !== 'Enter' && e.key !== ' '`,
+		`if (!url) return`,
+		`window.mahcdownOpenLink(url)`,
+	}
+	for _, fragment := range required {
+		if !strings.Contains(js, fragment) {
+			t.Errorf("shortcutJS() is missing %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{`getAttribute('href')`, `.href`, `closest('a')`} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("shortcutJS() still reads or handles an active generic href via %q", forbidden)
+		}
+	}
+}
+
 func parseBaseURL(t *testing.T, document string) *url.URL {
 	t.Helper()
 	const prefix = `<base href="`

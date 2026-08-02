@@ -348,17 +348,34 @@ document.addEventListener('DOMContentLoaded', () => {
   const isSearchOpen = () => search.style.display !== 'none';
   const isSearchFocused = () => search.contains(document.activeElement);
 
-  // Intercept link clicks to prompt before opening externally.
-  document.body.addEventListener('click', (e) => {
-    const a = e.target.closest('a');
-    if (!a || !a.href) return;
+  const findRenderedLink = (target) => {
+    if (!target || !target.closest) return null;
+    return target.closest('a.mahcdown-link[data-mahcdown-href]');
+  };
+
+  const activateRenderedLink = (e, link) => {
     e.preventDefault();
-    const url = a.getAttribute('data-href') || a.href;
-    const text = a.textContent || url;
+    const url = link.getAttribute('data-mahcdown-href');
+    if (!url) return;
+    const text = link.textContent || url;
     const ok = confirm('Open external link?\n' + text);
     if (ok && window.mahcdownOpenLink) {
       window.mahcdownOpenLink(url);
     }
+  };
+
+  // Renderer-produced links have no href, so they remain inert without this handler.
+  document.body.addEventListener('click', (e) => {
+    const link = findRenderedLink(e.target);
+    if (!link) return;
+    activateRenderedLink(e, link);
+  });
+
+  document.body.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const link = findRenderedLink(e.target);
+    if (!link) return;
+    activateRenderedLink(e, link);
   });
 
   // Hotkeys: r reload, Esc quit, Cmd+F search, Cmd+/- zoom via browser zoom.

@@ -885,6 +885,7 @@ table{border-collapse:collapse;margin:12px 0;}
 th,td{border:1px solid #ddd;padding:6px 10px;}
 blockquote{border-left:4px solid #ddd;margin:12px 0;padding-left:12px;color:#444;}
 .image-blocked{color:#c00;font-style:italic;}
+.mahcdown-link{color:#06c;text-decoration:underline;cursor:pointer;}
 .checkbox{vertical-align:middle;margin-right:6px;}
 ul,ol{margin:2px 0;padding-left:18px;}
 li{margin:0;padding:1px 0;}
@@ -1053,11 +1054,9 @@ func renderInlines(buf *strings.Builder, inlines []Inline, convertNewlines bool)
 				buf.WriteString(`"/>`)
 			}
 		case Url:
-			buf.WriteString(`<a href="`)
+			buf.WriteString(`<a class="mahcdown-link" role="link" tabindex="0" data-mahcdown-href="`)
 			buf.WriteString(html.EscapeString(v.URL))
-			buf.WriteString(`" data-href="`)
-			buf.WriteString(html.EscapeString(v.URL))
-			buf.WriteString(`" rel="noreferrer noopener">`)
+			buf.WriteString(`">`)
 			writeEscapedWithNewlines(buf, v.Text, convertNewlines)
 			buf.WriteString("</a>")
 		case Checkbox:
