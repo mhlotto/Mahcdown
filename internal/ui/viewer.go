@@ -532,21 +532,6 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       return;
     }
-    if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
-      if (!isSearchFocused()) {
-        const selection = window.getSelection();
-        const text = selection ? selection.toString() : '';
-        if (text) {
-          try {
-            document.execCommand('copy');
-          } catch (err) {
-            // Ignore copy errors and let default behavior proceed.
-          }
-          e.preventDefault();
-          return;
-        }
-      }
-    }
     if (e.key === 'Escape') {
       if (isSearchOpen()) {
         closeSearch();

@@ -341,6 +341,35 @@ func TestShortcutJSReportsNativeActionFailures(t *testing.T) {
 	}
 }
 
+func TestShortcutJSLeavesCopyToNativeBrowser(t *testing.T) {
+	js := shortcutJS()
+	for _, forbidden := range []string{
+		`document.execCommand`,
+		`execCommand('copy')`,
+		`navigator.clipboard`,
+		`writeText(`,
+		`e.key === 'c'`,
+		`e.key === 'C'`,
+	} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("shortcutJS() still intercepts native copying via %q", forbidden)
+		}
+	}
+	for _, preserved := range []string{
+		`(e.key === 'f' || e.key === 'F')`,
+		`if (e.key === 'Escape')`,
+		`(e.key === 'r' || e.key === 'R')`,
+		`if (e.key === 'q' || e.key === 'Q')`,
+		`openSearch()`,
+		`invokeNativeAction('Reload', window.mahcdownReload, {clearOnSuccess: true})`,
+		`invokeNativeAction('Quit', window.mahcdownQuit)`,
+	} {
+		if !strings.Contains(js, preserved) {
+			t.Errorf("shortcutJS() lost surrounding shortcut behavior %q", preserved)
+		}
+	}
+}
+
 func TestShortcutJSSearchExcludesOnlyViewerUI(t *testing.T) {
 	js := shortcutJS()
 	for _, fragment := range []string{
