@@ -312,13 +312,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let matches = [];
   let currentIndex = -1;
+  let searchTruncated = false;
+  let searchTimer = null;
+  const searchDebounceMilliseconds = 150;
+  const maxSearchMatches = 500;
 
   const updateCount = () => {
     if (!matches.length) {
       count.textContent = '0 / 0';
       return;
     }
-    count.textContent = (currentIndex + 1) + ' / ' + matches.length;
+    const total = matches.length + (searchTruncated ? '+' : '');
+    count.textContent = (currentIndex + 1) + ' / ' + total;
   };
 
   const clearHighlights = () => {
@@ -331,9 +336,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   };
 
-  const collectTextNodes = () => {
-    const nodes = [];
-    const walker = document.createTreeWalker(
+  const createSearchWalker = () => document.createTreeWalker(
       document.body,
       NodeFilter.SHOW_TEXT,
       {
@@ -355,22 +358,21 @@ document.addEventListener('DOMContentLoaded', () => {
           return NodeFilter.FILTER_ACCEPT;
         },
       }
-    );
-    while (walker.nextNode()) {
-      nodes.push(walker.currentNode);
-    }
-    return nodes;
-  };
+  );
 
   const findMatches = (query) => {
     clearHighlights();
     if (!query) {
-      return [];
+      return {hits: [], truncated: false};
     }
     const lowerQuery = query.toLowerCase();
     const hits = [];
-    const nodes = collectTextNodes();
-    nodes.forEach((node) => {
+    let truncated = false;
+    const walker = createSearchWalker();
+    let node = walker.nextNode();
+    while (node && !truncated) {
+      // Advance before replacing node so the walker retains a live current node.
+      const nextNode = walker.nextNode();
       const text = node.nodeValue;
       const lowerText = text.toLowerCase();
       let index = 0;
@@ -378,6 +380,10 @@ document.addEventListener('DOMContentLoaded', () => {
       let hadMatch = false;
       const frag = document.createDocumentFragment();
       while ((index = lowerText.indexOf(lowerQuery, lastIndex)) !== -1) {
+        if (hits.length >= maxSearchMatches) {
+          truncated = true;
+          break;
+        }
         hadMatch = true;
         if (index > lastIndex) {
           frag.appendChild(document.createTextNode(text.slice(lastIndex, index)));
@@ -390,14 +396,26 @@ document.addEventListener('DOMContentLoaded', () => {
         lastIndex = index + query.length;
       }
       if (!hadMatch) {
-        return;
+        node = nextNode;
+        continue;
       }
       if (lastIndex < text.length) {
         frag.appendChild(document.createTextNode(text.slice(lastIndex)));
       }
       node.parentNode.replaceChild(frag, node);
-    });
-    return hits;
+      if (truncated) {
+        break;
+      }
+      node = nextNode;
+    }
+    return {hits, truncated};
+  };
+
+  const cancelPendingSearch = () => {
+    if (searchTimer !== null) {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+    }
   };
 
   const focusMatch = (index) => {
@@ -417,22 +435,38 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const runSearch = () => {
+    cancelPendingSearch();
     const query = input.value;
     const trimmed = query.trim();
     if (!trimmed) {
       clearHighlights();
       matches = [];
       currentIndex = -1;
+      searchTruncated = false;
       updateCount();
       return;
     }
-    matches = findMatches(trimmed);
+    const result = findMatches(trimmed);
+    matches = result.hits;
+    searchTruncated = result.truncated;
     currentIndex = -1;
     if (matches.length) {
       focusMatch(0);
     } else {
       updateCount();
     }
+  };
+
+  const scheduleSearch = () => {
+    cancelPendingSearch();
+    if (!input.value.trim()) {
+      runSearch();
+      return;
+    }
+    searchTimer = setTimeout(() => {
+      searchTimer = null;
+      runSearch();
+    }, searchDebounceMilliseconds);
   };
 
   const setSearchOpen = (open) => {
@@ -449,20 +483,25 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const closeSearch = () => {
+    cancelPendingSearch();
     setSearchOpen(false);
     input.blur();
     clearHighlights();
     matches = [];
     currentIndex = -1;
+    searchTruncated = false;
     updateCount();
   };
 
   input.addEventListener('input', () => {
-    runSearch();
+    scheduleSearch();
   });
 
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
+      if (searchTimer !== null) {
+        runSearch();
+      }
       if (matches.length) {
         focusMatch(currentIndex + (e.shiftKey ? -1 : 1));
       }

@@ -392,6 +392,64 @@ func TestShortcutJSSearchExcludesOnlyViewerUI(t *testing.T) {
 	}
 }
 
+func TestShortcutJSDebouncesAndBoundsSearch(t *testing.T) {
+	js := shortcutJS()
+	required := []string{
+		`let searchTimer = null`,
+		`const searchDebounceMilliseconds = 150`,
+		`searchTimer = setTimeout(() =>`,
+		`clearTimeout(searchTimer)`,
+		`const maxSearchMatches = 500`,
+		`while (node && !truncated)`,
+		`while ((index = lowerText.indexOf(lowerQuery, lastIndex)) !== -1)`,
+		`if (hits.length >= maxSearchMatches)`,
+		`truncated = true`,
+		`break`,
+		`matches = result.hits`,
+		`searchTruncated = result.truncated`,
+		`matches.length + (searchTruncated ? '+' : '')`,
+		`parent.closest('#mahcdown-search, #mahcdown-action-error')`,
+		`input.addEventListener('input', () =>`,
+		`scheduleSearch()`,
+		`if (!input.value.trim())`,
+		`const closeSearch = () => {
+    cancelPendingSearch();`,
+		`if (searchTimer !== null) {
+        runSearch();
+      }
+      if (matches.length)`,
+		`focusMatch(currentIndex + (e.shiftKey ? -1 : 1))`,
+		`current.scrollIntoView({ block: 'center' })`,
+		`clearHighlights()`,
+	}
+	for _, fragment := range required {
+		if !strings.Contains(js, fragment) {
+			t.Errorf("shortcutJS() bounded search logic is missing %q", fragment)
+		}
+	}
+}
+
+func TestShortcutJSSearchTruncatesOnlyAfterExtraMatch(t *testing.T) {
+	js := shortcutJS()
+	detectExtra := strings.Index(js, `if (hits.length >= maxSearchMatches) {
+          truncated = true;
+          break;`)
+	createHighlight := strings.Index(js, `const mark = document.createElement('mark')`)
+	if detectExtra < 0 || createHighlight < 0 || detectExtra > createHighlight {
+		t.Fatalf("shortcutJS() must detect a 501st match before creating another highlight")
+	}
+	for _, fragment := range []string{
+		`const maxSearchMatches = 500`,
+		`while (node && !truncated)`,
+		`matches.length + (searchTruncated ? '+' : '')`,
+		`return {hits, truncated}`,
+	} {
+		if !strings.Contains(js, fragment) {
+			t.Errorf("shortcutJS() exact/truncated boundary logic is missing %q", fragment)
+		}
+	}
+}
+
 func TestRenderDocumentAppliesSelectedImagePolicyOnEveryRender(t *testing.T) {
 	temp := t.TempDir()
 	root := filepath.Join(temp, "document")
