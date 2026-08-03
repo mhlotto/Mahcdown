@@ -52,36 +52,73 @@ func Display(title, path, initialText string, options Options) error {
 	w.SetSize(initialWidth, initialHeight, webview.HintNone)
 	w.SetHtml(html)
 
-	// Bind reload: re-read file, re-render, and update HTML.
-	_ = w.Bind("mahcdownReload", func() (string, error) {
-		content, err := source.ReadTextFile(path, minimark.DefaultMaxSourceBytes)
+	reload := func() (string, error) {
+		err := reloadDocument(
+			func() (string, error) {
+				return source.ReadTextFile(path, minimark.DefaultMaxSourceBytes)
+			},
+			render,
+			func(newHTML string) error {
+				w.Dispatch(func() { w.SetHtml(newHTML) })
+				return nil
+			},
+		)
 		if err != nil {
 			return "", err
 		}
-		newHTML, err := render(content)
-		if err != nil {
-			return "", err
-		}
-		w.Dispatch(func() { w.SetHtml(newHTML) })
 		return "ok", nil
-	})
-
-	// Bind quit to close the window cleanly.
-	_ = w.Bind("mahcdownQuit", func() {
+	}
+	quit := func() {
 		w.Dispatch(func() { w.Terminate() })
-	})
-
-	// Bind external link opener (only used after user confirmation in JS).
-	_ = w.Bind("mahcdownOpenLink", func(destination string) error {
+	}
+	openLink := func(destination string) error {
 		return openExternalURL(destination, func(validatedURL string) error {
 			return exec.Command("open", validatedURL).Start()
 		})
-	})
+	}
+	if err := registerViewerBindings(w.Bind, reload, quit, openLink); err != nil {
+		return err
+	}
 
 	// Inject JS to wire shortcuts and guarded link handling.
 	w.Init(shortcutJS())
 
 	w.Run()
+	return nil
+}
+
+type bindFunction func(name string, callback interface{}) error
+
+func registerViewerBindings(bind bindFunction, reload func() (string, error), quit func(), openLink func(string) error) error {
+	bindings := []struct {
+		name     string
+		purpose  string
+		callback interface{}
+	}{
+		{name: "mahcdownReload", purpose: "reload action", callback: reload},
+		{name: "mahcdownQuit", purpose: "quit action", callback: quit},
+		{name: "mahcdownOpenLink", purpose: "external-link action", callback: openLink},
+	}
+	for _, binding := range bindings {
+		if err := bind(binding.name, binding.callback); err != nil {
+			return fmt.Errorf("bind %s: %w", binding.purpose, err)
+		}
+	}
+	return nil
+}
+
+func reloadDocument(read func() (string, error), render func(string) (string, error), update func(string) error) error {
+	content, err := read()
+	if err != nil {
+		return fmt.Errorf("reload document: read source: %w", err)
+	}
+	html, err := render(content)
+	if err != nil {
+		return fmt.Errorf("reload document: render source: %w", err)
+	}
+	if err := update(html); err != nil {
+		return fmt.Errorf("reload document: update view: %w", err)
+	}
 	return nil
 }
 
@@ -169,6 +206,50 @@ func injectBase(html, baseDir string) (string, error) {
 func shortcutJS() string {
 	return `
 document.addEventListener('DOMContentLoaded', () => {
+  const actionError = document.createElement('div');
+  actionError.id = 'mahcdown-action-error';
+  actionError.setAttribute('role', 'alert');
+  actionError.setAttribute('aria-live', 'assertive');
+  actionError.style.display = 'none';
+  document.body.appendChild(actionError);
+
+  const errorMessage = (error) => {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error) return error;
+    return 'Unknown error';
+  };
+
+  const showActionError = (label, error) => {
+    actionError.textContent = label + ' failed: ' + errorMessage(error);
+    actionError.style.display = 'block';
+  };
+
+  const clearActionError = () => {
+    actionError.textContent = '';
+    actionError.style.display = 'none';
+  };
+
+  const invokeNativeAction = (label, action, options = {}, ...args) => {
+    if (typeof action !== 'function') {
+      showActionError(label, new Error('native action unavailable'));
+      return Promise.resolve(false);
+    }
+    try {
+      return Promise.resolve(action(...args))
+        .then(() => {
+          if (options.clearOnSuccess) clearActionError();
+          return true;
+        })
+        .catch((error) => {
+          showActionError(label, error);
+          return false;
+        });
+    } catch (error) {
+      showActionError(label, error);
+      return Promise.resolve(false);
+    }
+  };
+
   // Inject search UI and styling.
   const search = document.createElement('div');
   search.id = 'mahcdown-search';
@@ -217,6 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const style = document.createElement('style');
   style.textContent =
+    '#mahcdown-action-error{position:fixed;top:12px;right:12px;max-width:calc(100% - 24px);box-sizing:border-box;background:#fff2f2;color:#8a1111;border:1px solid #d99;padding:8px 10px;border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,0.16);z-index:10000;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;white-space:pre-wrap;}' +
     '#mahcdown-search{position:fixed;left:50%;bottom:12px;transform:translateX(-50%);background:#f6f6f8;border:1px solid #c8c8cc;border-radius:8px;padding:8px 10px;box-shadow:0 10px 24px rgba(0,0,0,0.18);z-index:9999;max-width:calc(100% - 24px);font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;}' +
     '#mahcdown-search .mahcdown-search-inner{display:flex;align-items:center;gap:6px;}' +
     '#mahcdown-search .mahcdown-search-label{font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#666;margin-right:2px;}' +
@@ -263,7 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (!parent || !parent.closest) {
             return NodeFilter.FILTER_REJECT;
           }
-          if (parent.closest('#mahcdown-search')) {
+          if (parent.closest('#mahcdown-search, #mahcdown-action-error')) {
             return NodeFilter.FILTER_REJECT;
           }
           const tag = parent.nodeName.toLowerCase();
@@ -424,8 +506,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!url) return;
     const text = link.textContent || url;
     const ok = confirm('Open external link?\n' + text);
-    if (ok && window.mahcdownOpenLink) {
-      window.mahcdownOpenLink(url);
+    if (ok) {
+      invokeNativeAction('Open link', window.mahcdownOpenLink, {}, url);
     }
   };
 
@@ -471,24 +553,18 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         return;
       }
-      if (window.mahcdownQuit) {
-        window.mahcdownQuit();
-      }
+      invokeNativeAction('Quit', window.mahcdownQuit);
       return;
     }
     if (isSearchFocused()) {
       return;
     }
     if (e.key === 'q' || e.key === 'Q') {
-      if (window.mahcdownQuit) {
-        window.mahcdownQuit();
-      }
+      invokeNativeAction('Quit', window.mahcdownQuit);
       return;
     }
     if (!e.metaKey && !e.ctrlKey && (e.key === 'r' || e.key === 'R')) {
-      if (window.mahcdownReload) {
-        window.mahcdownReload();
-      }
+      invokeNativeAction('Reload', window.mahcdownReload, {clearOnSuccess: true});
       e.preventDefault();
       return;
     }

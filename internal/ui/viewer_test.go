@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"mahcdown/internal/minimark"
+	"mahcdown/internal/source"
 )
 
 const testHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>`
@@ -148,7 +149,7 @@ func TestShortcutJSHandlesOnlyInertRenderedLinks(t *testing.T) {
 		`document.body.addEventListener('keydown'`,
 		`e.key !== 'Enter' && e.key !== ' '`,
 		`if (!url) return`,
-		`window.mahcdownOpenLink(url)`,
+		`invokeNativeAction('Open link', window.mahcdownOpenLink, {}, url)`,
 	}
 	for _, fragment := range required {
 		if !strings.Contains(js, fragment) {
@@ -158,6 +159,206 @@ func TestShortcutJSHandlesOnlyInertRenderedLinks(t *testing.T) {
 	for _, forbidden := range []string{`getAttribute('href')`, `.href`, `closest('a')`} {
 		if strings.Contains(js, forbidden) {
 			t.Errorf("shortcutJS() still reads or handles an active generic href via %q", forbidden)
+		}
+	}
+}
+
+func TestRegisterViewerBindings(t *testing.T) {
+	wantNames := []string{"mahcdownReload", "mahcdownQuit", "mahcdownOpenLink"}
+	var gotNames []string
+	err := registerViewerBindings(func(name string, callback interface{}) error {
+		gotNames = append(gotNames, name)
+		if callback == nil {
+			t.Fatalf("binding %q received nil callback", name)
+		}
+		return nil
+	}, func() (string, error) { return "ok", nil }, func() {}, func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("registerViewerBindings() error = %v", err)
+	}
+	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("registered names = %v, want %v", gotNames, wantNames)
+	}
+}
+
+func TestRegisterViewerBindingsStopsAtFirstFailure(t *testing.T) {
+	sentinel := errors.New("bind failed")
+	tests := []struct {
+		name        string
+		failName    string
+		wantContext string
+		wantCalls   []string
+	}{
+		{name: "reload", failName: "mahcdownReload", wantContext: "bind reload action", wantCalls: []string{"mahcdownReload"}},
+		{name: "quit", failName: "mahcdownQuit", wantContext: "bind quit action", wantCalls: []string{"mahcdownReload", "mahcdownQuit"}},
+		{name: "external link", failName: "mahcdownOpenLink", wantContext: "bind external-link action", wantCalls: []string{"mahcdownReload", "mahcdownQuit", "mahcdownOpenLink"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls []string
+			err := registerViewerBindings(func(name string, _ interface{}) error {
+				calls = append(calls, name)
+				if name == tt.failName {
+					return sentinel
+				}
+				return nil
+			}, func() (string, error) { return "ok", nil }, func() {}, func(string) error { return nil })
+			if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), tt.wantContext) {
+				t.Fatalf("registration error = %v, want wrapped sentinel with %q", err, tt.wantContext)
+			}
+			if strings.Join(calls, ",") != strings.Join(tt.wantCalls, ",") {
+				t.Fatalf("binding calls = %v, want %v", calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+func TestReloadDocumentIsTransactionalAndContextual(t *testing.T) {
+	readErr := errors.New("read failed")
+	renderErr := errors.New("render failed")
+	updateErr := errors.New("update failed")
+	tests := []struct {
+		name        string
+		read        func() (string, error)
+		render      func(string) (string, error)
+		update      func(string) error
+		wantErr     error
+		wantContext string
+		wantUpdates int
+	}{
+		{name: "read", read: func() (string, error) { return "", readErr }, render: func(string) (string, error) { t.Fatal("render called after read failure"); return "", nil }, update: func(string) error { t.Fatal("update called after read failure"); return nil }, wantErr: readErr, wantContext: "reload document: read source"},
+		{name: "render", read: func() (string, error) { return "source", nil }, render: func(string) (string, error) { return "partial", renderErr }, update: func(string) error { t.Fatal("update called after render failure"); return nil }, wantErr: renderErr, wantContext: "reload document: render source"},
+		{name: "update", read: func() (string, error) { return "source", nil }, render: func(string) (string, error) { return "complete HTML", nil }, update: func(string) error { return updateErr }, wantErr: updateErr, wantContext: "reload document: update view", wantUpdates: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updates := 0
+			update := func(html string) error {
+				updates++
+				return tt.update(html)
+			}
+			err := reloadDocument(tt.read, tt.render, update)
+			if !errors.Is(err, tt.wantErr) || !strings.Contains(err.Error(), tt.wantContext) {
+				t.Fatalf("reloadDocument() error = %v, want wrapped error with %q", err, tt.wantContext)
+			}
+			if updates != tt.wantUpdates {
+				t.Fatalf("update calls = %d, want %d", updates, tt.wantUpdates)
+			}
+		})
+	}
+}
+
+func TestReloadDocumentSuccessUsesDecodedCompleteHTML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "document.md")
+	if err := os.WriteFile(path, []byte{'I', 't', 0x92, 's'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updates := 0
+	var updatedHTML string
+	err := reloadDocument(
+		func() (string, error) { return source.ReadTextFile(path, minimark.DefaultMaxSourceBytes) },
+		func(content string) (string, error) {
+			if content != "It’s" {
+				t.Fatalf("render content = %q, want decoded Windows-1252", content)
+			}
+			return "<html>complete</html>", nil
+		},
+		func(html string) error {
+			updates++
+			updatedHTML = html
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("reloadDocument() error = %v", err)
+	}
+	if updates != 1 || updatedHTML != "<html>complete</html>" {
+		t.Fatalf("reload update = (%d, %q), want one complete update", updates, updatedHTML)
+	}
+}
+
+func TestReloadDocumentPreservesLimitErrors(t *testing.T) {
+	readLimit := &minimark.LimitError{Kind: minimark.ErrSourceSizeLimit, Limit: 4}
+	err := reloadDocument(
+		func() (string, error) { return "", readLimit },
+		func(string) (string, error) { t.Fatal("render called after source-size failure"); return "", nil },
+		func(string) error { t.Fatal("update called after source-size failure"); return nil },
+	)
+	if !errors.Is(err, minimark.ErrSourceSizeLimit) {
+		t.Fatalf("wrapped read error = %v, want ErrSourceSizeLimit", err)
+	}
+
+	parseLimit := &minimark.LimitError{Kind: minimark.ErrParseItemLimit, Limit: 4}
+	err = reloadDocument(
+		func() (string, error) { return "source", nil },
+		func(string) (string, error) { return "", parseLimit },
+		func(string) error { t.Fatal("update called after parser failure"); return nil },
+	)
+	if !errors.Is(err, minimark.ErrParseItemLimit) {
+		t.Fatalf("wrapped render error = %v, want ErrParseItemLimit", err)
+	}
+}
+
+func TestShortcutJSReportsNativeActionFailures(t *testing.T) {
+	js := shortcutJS()
+	required := []string{
+		`actionError.id = 'mahcdown-action-error'`,
+		`actionError.setAttribute('role', 'alert')`,
+		`actionError.setAttribute('aria-live', 'assertive')`,
+		`actionError.textContent = label + ' failed: ' + errorMessage(error)`,
+		`const invokeNativeAction =`,
+		`typeof action !== 'function'`,
+		`new Error('native action unavailable')`,
+		`Promise.resolve(action(...args))`,
+		`if (options.clearOnSuccess) clearActionError()`,
+		`.catch((error) =>`,
+		`} catch (error) {`,
+		`invokeNativeAction('Reload', window.mahcdownReload, {clearOnSuccess: true})`,
+		`invokeNativeAction('Quit', window.mahcdownQuit)`,
+		`invokeNativeAction('Open link', window.mahcdownOpenLink, {}, url)`,
+		`if (ok) {`,
+		`if (isSearchOpen()) {`,
+		`if (isSearchFocused()) {`,
+		`!e.metaKey && !e.ctrlKey`,
+	}
+	for _, fragment := range required {
+		if !strings.Contains(js, fragment) {
+			t.Errorf("shortcutJS() is missing %q", fragment)
+		}
+	}
+	if count := strings.Count(js, `invokeNativeAction('Quit', window.mahcdownQuit)`); count != 2 {
+		t.Errorf("quit helper call count = %d, want 2", count)
+	}
+	for _, direct := range []string{
+		`window.mahcdownReload();`,
+		`window.mahcdownQuit();`,
+		`window.mahcdownOpenLink(url);`,
+		`actionError.innerHTML`,
+	} {
+		if strings.Contains(js, direct) {
+			t.Errorf("shortcutJS() contains unsafe/unhandled action %q", direct)
+		}
+	}
+}
+
+func TestShortcutJSSearchExcludesOnlyViewerUI(t *testing.T) {
+	js := shortcutJS()
+	for _, fragment := range []string{
+		`document.createTreeWalker(`,
+		`document.body,`,
+		`parent.closest('#mahcdown-search, #mahcdown-action-error')`,
+		`return NodeFilter.FILTER_ACCEPT`,
+	} {
+		if !strings.Contains(js, fragment) {
+			t.Errorf("shortcutJS() search logic is missing %q", fragment)
+		}
+	}
+	for _, broadExclusion := range []string{
+		`parent.closest('[style*=fixed]')`,
+		`parent.closest('[id]')`,
+	} {
+		if strings.Contains(js, broadExclusion) {
+			t.Errorf("shortcutJS() broadly excludes document text via %q", broadExclusion)
 		}
 	}
 }
