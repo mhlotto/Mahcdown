@@ -198,11 +198,11 @@ func parseBlocks(state *parserState, lines []string, start, baseIndent, depth in
 		rel := trimIndent(line, baseIndent)
 
 		// 1. Fenced code block
-		if ok, info := isFenceStart(rel); ok {
+		if fence, ok := parseFenceStart(rel); ok {
 			if !state.consumeItem() {
 				break
 			}
-			i, blocks = parseCodeBlock(state, lines, i, baseIndent, info, &blocks)
+			i, blocks = parseCodeBlock(state, lines, i, baseIndent, fence, &blocks)
 			continue
 		}
 
@@ -305,31 +305,71 @@ func leadingSpacesCount(s string) int {
 	return count
 }
 
-func isFenceStart(line string) (bool, string) {
-	trimLead := leadingSpacesCount(line)
-	if trimLead > 3 {
-		return false, ""
-	}
-	if len(line[trimLead:]) < 3 || line[trimLead:trimLead+3] != "```" {
-		return false, ""
-	}
-	rest := line[trimLead+3:]
-	return true, strings.TrimSpace(rest)
+type codeFence struct {
+	character byte
+	length    int
+	info      string
 }
 
-func parseCodeBlock(state *parserState, lines []string, start int, baseIndent int, info string, blocks *[]Block) (int, []Block) {
+func parseFenceStart(line string) (codeFence, bool) {
+	trimLead := leadingSpacesCount(line)
+	if trimLead > 3 {
+		return codeFence{}, false
+	}
+	fenceText := line[trimLead:]
+	if len(fenceText) < 3 || (fenceText[0] != '`' && fenceText[0] != '~') {
+		return codeFence{}, false
+	}
+	length := fenceRunLength(fenceText, fenceText[0])
+	if length < 3 {
+		return codeFence{}, false
+	}
+	rest := fenceText[length:]
+	if fenceText[0] == '`' && strings.ContainsRune(rest, '`') {
+		return codeFence{}, false
+	}
+	return codeFence{character: fenceText[0], length: length, info: strings.TrimSpace(rest)}, true
+}
+
+func fenceRunLength(text string, character byte) int {
+	length := 0
+	for length < len(text) && text[length] == character {
+		length++
+	}
+	return length
+}
+
+func isFenceClose(line string, opener codeFence) bool {
+	trimLead := leadingSpacesCount(line)
+	if trimLead > 3 {
+		return false
+	}
+	fenceText := line[trimLead:]
+	if len(fenceText) < opener.length || fenceText[0] != opener.character {
+		return false
+	}
+	length := fenceRunLength(fenceText, opener.character)
+	return length >= opener.length && strings.TrimSpace(fenceText[length:]) == ""
+}
+
+func codeBlockText(content []string, terminated bool) string {
+	text := strings.Join(content, "\n")
+	if terminated && len(content) > 0 {
+		text += "\n"
+	}
+	return text
+}
+
+func parseCodeBlock(state *parserState, lines []string, start int, baseIndent int, opener codeFence, blocks *[]Block) (int, []Block) {
 	var content []string
 	for i := start + 1; i < len(lines) && state.err == nil; i++ {
 		line := trimIndent(lines[i], baseIndent)
-		if trimLead := leadingSpacesCount(line); trimLead <= 3 {
-			after := line[trimLead:]
-			if strings.HasPrefix(after, "```") && strings.TrimSpace(after) == "```" {
-				*blocks = append(*blocks, CodeBlock{
-					Info: info,
-					Text: strings.Join(content, "\n") + "\n",
-				})
-				return i + 1, *blocks
-			}
+		if isFenceClose(line, opener) {
+			*blocks = append(*blocks, CodeBlock{
+				Info: opener.info,
+				Text: codeBlockText(content, true),
+			})
+			return i + 1, *blocks
 		}
 		if !state.consumeItem() {
 			return i, *blocks
@@ -339,8 +379,8 @@ func parseCodeBlock(state *parserState, lines []string, start int, baseIndent in
 
 	// No closing fence; extend to EOF.
 	*blocks = append(*blocks, CodeBlock{
-		Info: info,
-		Text: strings.Join(content, "\n"),
+		Info: opener.info,
+		Text: codeBlockText(content, false),
 	})
 	return len(lines), *blocks
 }
@@ -814,7 +854,7 @@ func parseParagraph(state *parserState, lines []string, start int, baseIndent in
 		rel := trimIndent(line, baseIndent)
 
 		// Check if a higher-precedence block would start here.
-		if ok, _ := isFenceStart(rel); ok {
+		if _, ok := parseFenceStart(rel); ok {
 			return i, appendParagraph(state, *blocks, strings.Join(paraLines, "\n"), depth)
 		}
 		if _, _, ok := parseHeadingLine(rel); ok {

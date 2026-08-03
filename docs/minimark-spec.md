@@ -54,7 +54,23 @@ Indentation is significant for list parsing (see §2.5).
 
 ## 2.1 Fenced Code Block
 
-Identical to MiniMark 1.1.
+A fenced code block opens with a maximal run of at least three identical backticks (`` ` ``) or
+tildes (`~`), optionally preceded by zero to three ASCII spaces. Text after the opening run is the
+info string; surrounding whitespace is removed before it is stored. A backtick-fence info string
+must not contain a backtick. Tilde-fence info strings have no corresponding backtick restriction.
+
+A closing fence:
+
+- Uses the same character as the opener.
+- Has a maximal run at least as long as the opening run.
+- May have zero to three leading ASCII spaces.
+- Contains only whitespace after its fence run.
+
+A shorter run, the other fence character, or a fence followed by non-whitespace remains literal
+code content. Code content receives no inline parsing. A terminated block preserves the newline
+before its closing fence when it has content; an empty block stores empty text. An unterminated
+block extends to end-of-file without error and preserves whether its final content line ended in a
+newline.
 
 ---
 
