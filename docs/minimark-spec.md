@@ -263,6 +263,12 @@ paragraph, heading, list-item, blockquote-child, and table-cell boundaries. Succ
 code spans, images, URLs, checkboxes, and other atomic inline constructs are opaque to delimiter
 processing.
 
+Bare `http://` and `https://` URLs end at whitespace, quotes, apostrophes, `]`, `}`, `>`, or an
+unmatched closing `)`. Parentheses inside a URL are included while balanced, including nested
+pairs. A depth-zero closing parenthesis remains surrounding text. Trailing `.`, `,`, `;`, `:`,
+`!`, and `?` are removed from the URL and likewise remain ordinary text. URL parsing never consumes
+an excluded delimiter or trailing punctuation byte.
+
 ---
 
 ## 4. Escapes

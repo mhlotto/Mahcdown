@@ -1339,27 +1339,29 @@ func parseAutoLink(s string) (url string, consumed int, ok bool) {
 }
 
 func parseBareURL(s string) (string, int) {
-	stopChars := " \t\n\r)]}>\"'"
 	end := 0
+	urlEnd := 0
+	parenthesisDepth := 0
 	for end < len(s) {
-		if strings.ContainsRune(stopChars, rune(s[end])) {
-			break
+		switch s[end] {
+		case ' ', '\t', '\n', '\r', ']', '}', '>', '"', '\'':
+			return s[:urlEnd], urlEnd
+		case '(':
+			parenthesisDepth++
+		case ')':
+			if parenthesisDepth == 0 {
+				return s[:urlEnd], urlEnd
+			}
+			parenthesisDepth--
 		}
 		end++
-	}
-	url := s[:end]
-	// Strip trailing punctuation .,;:!?
-	for len(url) > 0 {
-		last := url[len(url)-1]
-		if strings.ContainsRune(".,;:!?", rune(last)) {
-			url = url[:len(url)-1]
-			end--
-		} else {
-			break
+		switch s[end-1] {
+		case '.', ',', ';', ':', '!', '?':
+		default:
+			urlEnd = end
 		}
 	}
-
-	return url, end
+	return s[:urlEnd], urlEnd
 }
 
 func parseCheckbox(s string) (checked bool, consumed int, ok bool) {
