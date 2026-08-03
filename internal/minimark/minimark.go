@@ -617,10 +617,10 @@ func tryParseList(state *parserState, lines []string, start int, baseIndent, dep
 }
 
 type listMarker struct {
-	ordered bool
-	start   int
-	indent  int
-	length  int // marker length including trailing space and leading whitespace already trimmed? length from line start after base?
+	ordered       bool
+	start         int
+	markerIndent  int // Spaces before the marker, relative to the current list base.
+	contentOffset int // Bytes through the required post-marker space, relative to the current list base.
 }
 
 func parseListMarker(line string) (listMarker, bool) {
@@ -634,7 +634,7 @@ func parseListMarker(line string) (listMarker, bool) {
 	}
 	// Unordered
 	if (rest[0] == '-' || rest[0] == '*' || rest[0] == '+') && len(rest) > 1 && rest[1] == ' ' {
-		return listMarker{ordered: false, start: 0, indent: ws, length: ws + 2}, true
+		return listMarker{ordered: false, markerIndent: ws, contentOffset: ws + 2}, true
 	}
 	// Ordered
 	numEnd := 0
@@ -646,19 +646,77 @@ func parseListMarker(line string) (listMarker, bool) {
 		for i := 0; i < numEnd; i++ {
 			val = val*10 + int(rest[i]-'0')
 		}
-		return listMarker{ordered: true, start: val, indent: ws, length: ws + numEnd + 2}, true
+		return listMarker{ordered: true, start: val, markerIndent: ws, contentOffset: ws + numEnd + 2}, true
 	}
 	return listMarker{}, false
 }
 
-func parseListItem(state *parserState, lines []string, start int, baseIndent int, depth int, marker listMarker) (ListItem, int) {
-	contentIndent := baseIndent + marker.length
-	nestedMinIndent := baseIndent + marker.indent + 2
-	rel := trimIndent(lines[start], baseIndent)
-	if marker.length > len(rel) {
-		marker.length = len(rel)
+type listItemIndent struct {
+	listBase      int
+	markerColumn  int
+	contentColumn int
+	childBase     int
+}
+
+type listLineKind int
+
+const (
+	listLineBlank listLineKind = iota
+	listLineSibling
+	listLineNested
+	listLineContinuation
+	listLineEnd
+)
+
+func classifyListItemLine(line string, columns listItemIndent) (listLineKind, string) {
+	if isBlank(line) {
+		return listLineBlank, ""
 	}
-	content := rel[marker.length:]
+	indent := leadingSpacesCount(line)
+	if indent < columns.listBase {
+		return listLineEnd, ""
+	}
+
+	// A child marker is measured from markerColumn+2, independently of the
+	// parent's potentially wider content column. The child parser then permits
+	// its normal zero-to-three-space marker indent.
+	if indent >= columns.childBase && indent <= columns.childBase+3 {
+		childLine := trimIndent(line, columns.childBase)
+		if _, ok := parseListMarker(childLine); ok {
+			return listLineNested, childLine
+		}
+	}
+	if indent > columns.childBase+3 {
+		markerLine := trimIndent(line, indent)
+		if _, ok := parseListMarker(markerLine); ok {
+			if indent < columns.contentColumn {
+				return listLineEnd, ""
+			}
+			// Retain indentation relative to childBase so the recursive block
+			// parser still sees more than three spaces before this rejected marker.
+			return listLineContinuation, trimIndent(line, columns.childBase)
+		}
+	}
+
+	relativeLine := trimIndent(line, columns.listBase)
+	if sibling, ok := parseListMarker(relativeLine); ok && columns.listBase+sibling.markerIndent < columns.childBase {
+		return listLineSibling, ""
+	}
+	if indent >= columns.contentColumn {
+		return listLineContinuation, trimIndent(line, columns.contentColumn)
+	}
+	return listLineEnd, ""
+}
+
+func parseListItem(state *parserState, lines []string, start int, listBase int, depth int, marker listMarker) (ListItem, int) {
+	columns := listItemIndent{
+		listBase:      listBase,
+		markerColumn:  listBase + marker.markerIndent,
+		contentColumn: listBase + marker.contentOffset,
+	}
+	columns.childBase = columns.markerColumn + 2
+	rel := trimIndent(lines[start], listBase)
+	content := rel[marker.contentOffset:]
 	hasCheckbox, checked := false, false
 	if cChecked, consumed, ok := parseCheckbox(content); ok {
 		hasCheckbox = true
@@ -674,61 +732,22 @@ func parseListItem(state *parserState, lines []string, start int, baseIndent int
 
 	i := start + 1
 	for i < len(lines) && state.err == nil {
-		line := lines[i]
-		if isBlank(line) {
+		kind, normalized := classifyListItemLine(lines[i], columns)
+		switch kind {
+		case listLineBlank, listLineNested, listLineContinuation:
 			if !state.consumeItem() {
 				break
 			}
-			itemLines = append(itemLines, "")
+			itemLines = append(itemLines, normalized)
 			i++
-			continue
+		case listLineSibling, listLineEnd:
+			goto parsed
 		}
-		indent := leadingSpacesCount(line)
-		if indent < baseIndent {
-			break
-		}
-		relLine := trimIndent(line, baseIndent)
-		if indent >= baseIndent && indent < nestedMinIndent {
-			if _, ok := parseListMarker(relLine); ok {
-				break
-			}
-		}
-		if indent < contentIndent && !isBlank(line) {
-			if indent >= nestedMinIndent {
-				candidate := trimIndent(line, nestedMinIndent)
-				if _, ok := parseListMarker(candidate); ok {
-					if !state.consumeItem() {
-						break
-					}
-					itemLines = append(itemLines, candidate)
-					i++
-					continue
-				}
-			}
-			break
-		}
-		if indent >= contentIndent {
-			candidate := trimIndent(line, nestedMinIndent)
-			if _, ok := parseListMarker(candidate); ok {
-				if !state.consumeItem() {
-					break
-				}
-				itemLines = append(itemLines, candidate)
-			} else {
-				if !state.consumeItem() {
-					break
-				}
-				itemLines = append(itemLines, trimIndent(line, contentIndent))
-			}
-		} else {
-			if !state.consumeItem() {
-				break
-			}
-			itemLines = append(itemLines, "")
-		}
-		i++
 	}
 
+parsed:
+	// List-item blocks share the parser's sole nesting budget. Each item enters
+	// exactly one deeper block-parsing level; nested containers do the same.
 	blocks, _ := parseBlocks(state, itemLines, 0, 0, depth+1)
 	return ListItem{
 		HasCheckbox: hasCheckbox,

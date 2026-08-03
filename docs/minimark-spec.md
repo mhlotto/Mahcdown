@@ -79,7 +79,7 @@ Identical to MiniMark 1.1.
 ## 2.5 Lists
 
 MiniMark supports **unordered (bulleted)** and **ordered (numbered)** lists,
-including arbitrarily nested lists.
+including nested lists up to the configured parser nesting-depth limit.
 
 ### 2.5.1 List Item Markers
 
@@ -108,12 +108,21 @@ Examples:
 
 ### 2.5.2 Indentation Rules
 
-- A list item marker must be preceded by **0–3 spaces** at the current nesting level.
-- Nested lists are created when a list item is indented **at least 2 spaces more**
-  than its parent list item marker.
-- Tabs are not allowed for indentation.
+List indentation uses these columns:
 
-Indentation is measured from the start of the line to the first non-whitespace character.
+- `listBase` is the indentation base of the current list parser.
+- `markerIndent` is the 0–3 optional spaces before a marker, relative to `listBase`.
+- `markerColumn` is `listBase + markerIndent`, the absolute column where the marker begins.
+- `contentColumn` is the absolute column after the marker and its required literal space.
+- `childBase` is `markerColumn + 2`, the minimum base for a nested list.
+
+A child marker may have another 0–3 optional spaces after `childBase`. Ordinary continuation text
+must begin at or after `contentColumn`, while a nested list marker may begin at or after
+`childBase`. Consequently, a child below a wide ordered marker can begin before the parent's text
+column, as in `10. parent` followed by `  - child`.
+
+Only ASCII spaces count as indentation. Tabs do not count as indentation, and the required byte
+after `-`, `+`, `*`, or an ordered `.` marker is a literal ASCII space.
 
 ### 2.5.3 List Item Content
 
@@ -126,9 +135,13 @@ A list item consists of:
 Item content may span multiple lines.
 
 Continuation lines must be indented **at least to the column of the first content character**
-after the marker.
+after the marker. That many spaces are stripped; additional indentation remains in the retained
+content. Nested list lines instead strip `childBase`, preserving any optional child marker indent.
 
-Blank lines are allowed inside list items and are preserved.
+Blank lines may separate blocks within an item or appear before a nested list. They are retained
+for block separation but do not produce empty paragraphs or literal blank-text nodes. Blank lines
+before a same-level sibling keep that sibling in the same list. Unindented non-list content after
+a blank line ends the item and list.
 
 ### 2.5.4 Nested Blocks in List Items
 
@@ -142,6 +155,16 @@ Allowed inside list items:
 - Tables
 - Headings
 - Fenced code blocks
+- Horizontal rules
+
+Changing among `-`, `+`, and `*` does not split an unordered list. Ordered items remain in one
+ordered list even when later marker numbers differ; the list start is the first marker's number.
+Changing between ordered and unordered markers at the same level creates adjacent list blocks.
+The same switch within an item creates adjacent child list blocks.
+
+List-item block parsing uses the normal parser recursively and increments the shared parser depth
+once. `MaxNestingDepth` is the sole list-nesting boundary; exceeding it is an error rather than
+silent truncation or partial rendering.
 
 ---
 
