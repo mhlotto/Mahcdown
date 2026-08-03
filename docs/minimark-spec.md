@@ -220,6 +220,16 @@ Inline parsing applies inside:
 
 Inline parsing does **not** apply inside fenced code blocks.
 
+Code spans use maximal backtick delimiter runs. An opening run closes at the first later maximal
+run of exactly the same length; differently sized runs inside the span remain literal. This permits
+embedded backticks by using a longer surrounding delimiter. Unmatched runs remain literal text.
+
+Inside a matched code span, line endings become ASCII spaces. When the normalized content begins
+and ends with an ASCII space and is not entirely ASCII spaces, exactly one space is removed from
+each edge. Tabs, Unicode whitespace, interior spaces, backslashes, and other content remain
+literal. Code spans are opaque to all other inline parsing. These are MiniMark's defined code-span
+rules and do not imply complete CommonMark compatibility.
+
 Asterisk delimiter runs provide `*emphasis*` and `**strong emphasis**`. MiniMark classifies runs
 with Unicode left- and right-flanking rules and resolves them with a delimiter stack following the
 CommonMark asterisk emphasis algorithm. Underscore emphasis is not supported, and MiniMark does

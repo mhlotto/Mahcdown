@@ -839,6 +839,11 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 	if !state.allowDepth(depth) {
 		return nil
 	}
+	backtickRuns := indexBacktickRuns(state, text)
+	if state.err != nil {
+		return nil
+	}
+	backtickCursor := 0
 	sequence := &inlineSequence{}
 	var firstDelimiter, lastDelimiter *asteriskDelimiter
 	i := 0
@@ -869,13 +874,21 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 
 		// Code span
 		if text[i] == '`' {
-			end := strings.IndexByte(text[i+1:], '`')
-			if end >= 0 {
-				content := text[i+1 : i+1+end]
-				appendInline(CodeSpan{Text: content}, end+2)
+			for backtickCursor < len(backtickRuns) && backtickRuns[backtickCursor].start < i {
+				backtickCursor++
+			}
+			if backtickCursor < len(backtickRuns) && backtickRuns[backtickCursor].start == i {
+				run := backtickRuns[backtickCursor]
+				if content, consumed, ok := parseCodeSpan(text, backtickRuns, backtickCursor); ok {
+					appendInline(CodeSpan{Text: content}, consumed)
+					continue
+				}
+				// An unmatched maximal run remains literal. Advance over the whole
+				// run so no subset can become a delimiter.
+				i += run.length
+				atLineStart = false
 				continue
 			}
-			// No closing backtick; treat as text.
 		}
 
 		// Image
@@ -939,6 +952,63 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 		return nil
 	}
 	return sequence.inlines()
+}
+
+type backtickRun struct {
+	start    int
+	length   int
+	nextSame int
+}
+
+func indexBacktickRuns(state *parserState, text string) []backtickRun {
+	lastByLength := make(map[int]int)
+	var runs []backtickRun
+	for i := 0; i < len(text); {
+		if text[i] != '`' {
+			i++
+			continue
+		}
+		length := backtickRunLength(text, i)
+		if !state.consumeItem() {
+			return nil
+		}
+		index := len(runs)
+		runs = append(runs, backtickRun{start: i, length: length, nextSame: -1})
+		if previous, ok := lastByLength[length]; ok {
+			runs[previous].nextSame = index
+		}
+		lastByLength[length] = index
+		i += length
+	}
+	return runs
+}
+
+func backtickRunLength(text string, start int) int {
+	end := start
+	for end < len(text) && text[end] == '`' {
+		end++
+	}
+	return end - start
+}
+
+func parseCodeSpan(text string, runs []backtickRun, openerIndex int) (content string, consumed int, ok bool) {
+	opener := runs[openerIndex]
+	if opener.nextSame < 0 {
+		return "", 0, false
+	}
+	closer := runs[opener.nextSame]
+	contentStart := opener.start + opener.length
+	content = normalizeCodeSpanContent(text[contentStart:closer.start])
+	return content, closer.start + closer.length - opener.start, true
+}
+
+func normalizeCodeSpanContent(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.NewReplacer("\r", " ", "\n", " ").Replace(content)
+	if len(content) >= 2 && content[0] == ' ' && content[len(content)-1] == ' ' && strings.Trim(content, " ") != "" {
+		return content[1 : len(content)-1]
+	}
+	return content
 }
 
 type inlineNode struct {
@@ -1258,6 +1328,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-se
 p,blockquote p{white-space:pre-wrap;}
 pre{background:#e8ebf0;padding:12px;border-radius:6px;overflow:auto;}
 code{font-family:Menlo,Monaco,Consolas,"Courier New",monospace;}
+:not(pre)>code{white-space:pre-wrap;}
+pre code{white-space:pre;}
 table{border-collapse:collapse;margin:12px 0;}
 th,td{border:1px solid #ddd;padding:6px 10px;}
 blockquote{border-left:4px solid #ddd;margin:12px 0;padding-left:12px;color:#444;}
