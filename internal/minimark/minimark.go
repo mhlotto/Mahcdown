@@ -380,7 +380,7 @@ func tryParseTable(state *parserState, lines []string, start int, baseIndent, de
 	}
 	headerLine := trimIndent(lines[start], baseIndent)
 	sepLine := trimIndent(lines[start+1], baseIndent)
-	if isBlank(headerLine) || !strings.Contains(headerLine, "|") {
+	if isBlank(headerLine) || !containsStructuralTablePipe(headerLine) {
 		return Table{}, 0
 	}
 
@@ -397,7 +397,7 @@ func tryParseTable(state *parserState, lines []string, start int, baseIndent, de
 	consumed := 2
 	for i := start + 2; i < len(lines) && state.err == nil; i++ {
 		line := trimIndent(lines[i], baseIndent)
-		if isBlank(line) || !strings.Contains(line, "|") {
+		if isBlank(line) || !containsStructuralTablePipe(line) {
 			break
 		}
 		if !state.consumeItem() { // Retained table row.
@@ -436,38 +436,20 @@ func tryParseTable(state *parserState, lines []string, start int, baseIndent, de
 func splitTableRow(state *parserState, line string) []string {
 	trimmed := trimOuterTablePipes(line)
 	var cells []string
-	var current strings.Builder
 	if !state.consumeItem() { // First retained table cell.
 		return nil
 	}
-	escaped := false
+	start := 0
 	for i := 0; i < len(trimmed); i++ {
-		ch := trimmed[i]
-		if escaped {
-			if ch == '|' {
-				current.WriteByte('|')
-			} else {
-				current.WriteByte('\\')
-				current.WriteByte(ch)
-			}
-			escaped = false
-			continue
-		}
-		if ch == '\\' {
-			escaped = true
-			continue
-		}
-		if ch == '|' {
-			cells = append(cells, strings.TrimSpace(current.String()))
-			current.Reset()
+		if isStructuralTablePipe(trimmed, i) {
+			cells = append(cells, strings.TrimSpace(trimmed[start:i]))
 			if !state.consumeItem() { // Next retained table cell.
 				return cells
 			}
-			continue
+			start = i + 1
 		}
-		current.WriteByte(ch)
 	}
-	cells = append(cells, strings.TrimSpace(current.String()))
+	cells = append(cells, strings.TrimSpace(trimmed[start:]))
 	return cells
 }
 
@@ -476,10 +458,71 @@ func trimOuterTablePipes(line string) string {
 	if strings.HasPrefix(trimmed, "|") {
 		trimmed = trimmed[1:]
 	}
-	if strings.HasSuffix(trimmed, "|") {
+	if len(trimmed) > 0 && isStructuralTablePipe(trimmed, len(trimmed)-1) {
 		trimmed = trimmed[:len(trimmed)-1]
 	}
 	return trimmed
+}
+
+func isEscapableASCIIPunctuation(b byte) bool {
+	return b >= '!' && b <= '~' &&
+		!(b >= '0' && b <= '9') &&
+		!(b >= 'A' && b <= 'Z') &&
+		!(b >= 'a' && b <= 'z')
+}
+
+func isEscapedAt(text string, index int) bool {
+	backslashes := 0
+	for index > 0 && text[index-1] == '\\' {
+		backslashes++
+		index--
+	}
+	return backslashes%2 == 1
+}
+
+func isStructuralTablePipe(text string, index int) bool {
+	return index >= 0 && index < len(text) && text[index] == '|' && !isEscapedAt(text, index)
+}
+
+func containsStructuralTablePipe(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if isStructuralTablePipe(text, i) {
+			return true
+		}
+	}
+	return false
+}
+
+func findUnescapedByte(text string, target byte, start int) int {
+	for i := start; i < len(text); i++ {
+		if text[i] == target && !isEscapedAt(text, i) {
+			return i
+		}
+	}
+	return -1
+}
+
+func unescapeBackslashPunctuation(text string) string {
+	first := -1
+	for i := 0; i+1 < len(text); i++ {
+		if text[i] == '\\' && isEscapableASCIIPunctuation(text[i+1]) {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return text
+	}
+	var result strings.Builder
+	result.Grow(len(text) - 1)
+	result.WriteString(text[:first])
+	for i := first; i < len(text); i++ {
+		if text[i] == '\\' && i+1 < len(text) && isEscapableASCIIPunctuation(text[i+1]) {
+			i++
+		}
+		result.WriteByte(text[i])
+	}
+	return result.String()
 }
 
 func parseSeparatorAlignments(state *parserState, line string, expected int) ([]Align, bool) {
@@ -487,7 +530,7 @@ func parseSeparatorAlignments(state *parserState, line string, expected int) ([]
 	aligns := make([]Align, 0, expected)
 	start := 0
 	for i := 0; i <= len(trimmed); i++ {
-		if i < len(trimmed) && trimmed[i] != '|' {
+		if i < len(trimmed) && !isStructuralTablePipe(trimmed, i) {
 			continue
 		}
 		align, ok := parseSeparatorCell(trimmed[start:i])
@@ -784,7 +827,7 @@ func isTableStart(lines []string, start, baseIndent int) bool {
 		return false
 	}
 	header := trimIndent(lines[start], baseIndent)
-	if isBlank(header) || !strings.Contains(header, "|") {
+	if isBlank(header) || !containsStructuralTablePipe(header) {
 		return false
 	}
 	headerCount := tableCellCount(header)
@@ -794,17 +837,8 @@ func isTableStart(lines []string, start, baseIndent int) bool {
 func tableCellCount(line string) int {
 	trimmed := trimOuterTablePipes(line)
 	count := 1
-	escaped := false
 	for i := 0; i < len(trimmed); i++ {
-		if escaped {
-			escaped = false
-			continue
-		}
-		if trimmed[i] == '\\' {
-			escaped = true
-			continue
-		}
-		if trimmed[i] == '|' {
+		if isStructuralTablePipe(trimmed, i) {
 			count++
 		}
 	}
@@ -816,7 +850,7 @@ func validSeparatorLine(line string, expected int) bool {
 	count := 0
 	start := 0
 	for i := 0; i <= len(trimmed); i++ {
-		if i < len(trimmed) && trimmed[i] != '|' {
+		if i < len(trimmed) && !isStructuralTablePipe(trimmed, i) {
 			continue
 		}
 		if _, ok := parseSeparatorCell(trimmed[start:i]); !ok {
@@ -848,12 +882,19 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 	var firstDelimiter, lastDelimiter *asteriskDelimiter
 	i := 0
 	textStart := 0
+	var pendingText strings.Builder
 	atLineStart := true
+	suppressedBareURLAt := -1
 	flushText := func(end int) bool {
-		if end <= textStart {
+		if end > textStart {
+			pendingText.WriteString(text[textStart:end])
+		}
+		if pendingText.Len() == 0 {
 			return true
 		}
-		return sequence.append(state, Text{Text: text[textStart:end]}, 0) != nil
+		value := pendingText.String()
+		pendingText.Reset()
+		return sequence.append(state, Text{Text: value}, 0) != nil
 	}
 	appendInline := func(inline Inline, consumed int) bool {
 		if !flushText(i) || sequence.append(state, inline, 0) == nil {
@@ -865,6 +906,24 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 		return true
 	}
 	for i < len(text) && state.err == nil {
+		if text[i] == '\\' && i+1 < len(text) && isEscapableASCIIPunctuation(text[i+1]) {
+			pendingText.WriteString(text[textStart:i])
+			escaped := text[i+1]
+			pendingText.WriteByte(escaped)
+			i += 2
+			if escaped == '*' || escaped == '`' {
+				for i < len(text) && text[i] == escaped {
+					pendingText.WriteByte(text[i])
+					i++
+				}
+			}
+			if escaped == '<' {
+				suppressedBareURLAt = i
+			}
+			textStart = i
+			atLineStart = false
+			continue
+		}
 		if atLineStart {
 			if checked, consumed, ok := parseCheckbox(text[i:]); ok {
 				appendInline(Checkbox{Checked: checked}, consumed)
@@ -934,7 +993,7 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 		}
 
 		// Bare URL
-		if strings.HasPrefix(text[i:], "http://") || strings.HasPrefix(text[i:], "https://") {
+		if i != suppressedBareURLAt && (strings.HasPrefix(text[i:], "http://") || strings.HasPrefix(text[i:], "https://")) {
 			url, consumed := parseBareURL(text[i:])
 			appendInline(Url{URL: url, Text: url}, consumed)
 			continue
@@ -1227,7 +1286,7 @@ func removeAsteriskDelimiter(delimiter *asteriskDelimiter) {
 
 func parseImage(s string) (alt, url string, consumed int, ok bool) {
 	// s expected to start with "!["
-	endAlt := strings.IndexByte(s, ']')
+	endAlt := findUnescapedByte(s, ']', 2)
 	if endAlt < 2 || s[0:2] != "![" {
 		return "", "", 0, false
 	}
@@ -1236,16 +1295,13 @@ func parseImage(s string) (alt, url string, consumed int, ok bool) {
 	if len(rest) < 2 || rest[0] != '(' {
 		return "", "", 0, false
 	}
-	endURL := strings.IndexByte(rest, ')')
+	endURL := findUnescapedByte(rest, ')', 1)
 	if endURL < 0 {
 		return "", "", 0, false
 	}
 	urlContent := rest[1:endURL]
-	if strings.Contains(altContent, "]") || strings.Contains(urlContent, ")") {
-		return "", "", 0, false
-	}
 	consumed = (endAlt + 1) + (endURL + 1)
-	return altContent, urlContent, consumed, true
+	return unescapeBackslashPunctuation(altContent), unescapeBackslashPunctuation(urlContent), consumed, true
 }
 
 func parseAutoLink(s string) (url string, consumed int, ok bool) {

@@ -244,7 +244,28 @@ processing.
 
 ## 4. Escapes
 
-Identical to MiniMark 1.1.
+Backslash escapes apply to printable ASCII punctuation only. The escapable set is:
+
+```text
+!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
+```
+
+An escaped punctuation byte is emitted literally and loses its MiniMark meaning. ASCII letters,
+digits, spaces, tabs, Unicode letters and punctuation, and other non-ASCII bytes are not escapable;
+the backslash remains literal before them. A trailing backslash is also literal. In a run of
+backslashes, pairs produce literal backslashes, so an odd run escapes following ASCII punctuation
+and an even run leaves it available to MiniMark parsing.
+
+Matched inline code spans, fenced code blocks, and recognized autolinks are opaque: their contents
+do not undergo backslash unescaping. Images use escape-aware closing delimiters, and escapable
+punctuation in image alt text and destinations is unescaped once.
+
+Table structure uses the same odd/even rule for pipes. A pipe preceded by an odd backslash run is
+cell content; a pipe preceded by an even run separates cells. Table scanning retains the
+backslashes, and normal inline parsing performs the final unescape exactly once. Pipes inside code
+spans are not treated specially by table structure in this version.
+
+These are MiniMark's defined escape rules and do not imply complete CommonMark compatibility.
 
 ---
 
