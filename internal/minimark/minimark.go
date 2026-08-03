@@ -97,6 +97,12 @@ type Url struct {
 	Text string
 }
 
+// Link is an inline Markdown link with parsed label content.
+type Link struct {
+	URL     string
+	Inlines []Inline
+}
+
 // Checkbox is a line-initial checkbox marker.
 type Checkbox struct {
 	Checked bool
@@ -128,6 +134,7 @@ func (Paragraph) blockNode()      {}
 func (CodeSpan) inlineNode() {}
 func (Image) inlineNode()    {}
 func (Url) inlineNode()      {}
+func (Link) inlineNode()     {}
 func (Checkbox) inlineNode() {}
 func (Strong) inlineNode()   {}
 func (Emphasis) inlineNode() {}
@@ -929,6 +936,10 @@ func appendParagraph(state *parserState, blocks []Block, text string, depth int)
 }
 
 func parseInlines(state *parserState, text string, depth int) []Inline {
+	return parseInlinesWithLinks(state, text, depth, true)
+}
+
+func parseInlinesWithLinks(state *parserState, text string, depth int, allowLinks bool) []Inline {
 	if !state.allowDepth(depth) {
 		return nil
 	}
@@ -976,6 +987,18 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 					i++
 				}
 			}
+			if escaped == '!' && i < len(text) && text[i] == '[' {
+				if _, _, consumed, ok := parseLink(text[i:]); ok {
+					pendingText.WriteString(unescapeBackslashPunctuation(text[i : i+consumed]))
+					i += consumed
+				}
+			}
+			if escaped == '[' {
+				if _, _, consumed, ok := parseLink(text[i-1:]); ok {
+					pendingText.WriteString(unescapeBackslashPunctuation(text[i : i-1+consumed]))
+					i += consumed - 1
+				}
+			}
 			if escaped == '<' {
 				suppressedBareURLAt = i
 			}
@@ -1017,10 +1040,36 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 			}
 		}
 
+		// Standard inline link. Images retain precedence because they are parsed
+		// immediately above. Link parsing is disabled recursively inside labels.
+		if text[i] == '[' {
+			label, destination, consumed, ok := parseLink(text[i:])
+			if ok {
+				if allowLinks {
+					labelInlines := parseInlinesWithLinks(state, label, depth+1, false)
+					if state.err != nil {
+						break
+					}
+					appendInline(Link{URL: destination, Inlines: labelInlines}, consumed)
+				} else {
+					appendInline(Text{Text: unescapeBackslashPunctuation(text[i : i+consumed])}, consumed)
+				}
+				continue
+			}
+			if consumed > 0 {
+				appendInline(Text{Text: unescapeBackslashPunctuation(text[i : i+consumed])}, consumed)
+				continue
+			}
+		}
+
 		// Autolink
 		if text[i] == '<' {
 			if url, consumed, ok := parseAutoLink(text[i:]); ok {
-				appendInline(Url{URL: url, Text: url}, consumed)
+				if allowLinks {
+					appendInline(Url{URL: url, Text: url}, consumed)
+				} else {
+					appendInline(Text{Text: text[i : i+consumed]}, consumed)
+				}
 				continue
 			}
 		}
@@ -1054,7 +1103,11 @@ func parseInlines(state *parserState, text string, depth int) []Inline {
 		// Bare URL
 		if i != suppressedBareURLAt && (strings.HasPrefix(text[i:], "http://") || strings.HasPrefix(text[i:], "https://")) {
 			url, consumed := parseBareURL(text[i:])
-			appendInline(Url{URL: url, Text: url}, consumed)
+			if allowLinks {
+				appendInline(Url{URL: url, Text: url}, consumed)
+			} else {
+				appendInline(Text{Text: url}, consumed)
+			}
 			continue
 		}
 
@@ -1363,6 +1416,102 @@ func parseImage(s string) (alt, url string, consumed int, ok bool) {
 	return unescapeBackslashPunctuation(altContent), unescapeBackslashPunctuation(urlContent), consumed, true
 }
 
+func parseLink(s string) (label, destination string, consumed int, ok bool) {
+	if len(s) < 2 || s[0] != '[' {
+		return "", "", 0, false
+	}
+	endLabel := findBalancedLinkLabelEnd(s)
+	if endLabel < 0 || endLabel+1 >= len(s) || s[endLabel+1] != '(' {
+		return "", "", 0, false
+	}
+	endDestination := findBalancedLinkDestinationEnd(s, endLabel+2)
+	if endDestination < 0 {
+		return "", "", len(s), false
+	}
+	return s[1:endLabel], unescapeBackslashPunctuation(s[endLabel+2 : endDestination]), endDestination + 1, true
+}
+
+func findBalancedLinkLabelEnd(text string) int {
+	depth := 1
+	for i := 1; i < len(text); i++ {
+		if text[i] == '\\' && i+1 < len(text) && isEscapableASCIIPunctuation(text[i+1]) {
+			i++
+			continue
+		}
+		if text[i] == '`' {
+			runLength := backtickRunLength(text, i)
+			candidateDepth := depth
+			firstLabelEnd := -1
+			matchedCodeSpan := false
+			for candidate := i + runLength; candidate < len(text); {
+				if text[candidate] == '\\' && candidate+1 < len(text) && isEscapableASCIIPunctuation(text[candidate+1]) {
+					candidate += 2
+					continue
+				}
+				if text[candidate] == '`' {
+					candidateRunLength := backtickRunLength(text, candidate)
+					if candidateRunLength == runLength {
+						i = candidate + candidateRunLength - 1
+						matchedCodeSpan = true
+						break
+					}
+					candidate += candidateRunLength
+					continue
+				}
+				if firstLabelEnd < 0 {
+					switch text[candidate] {
+					case '[':
+						candidateDepth++
+					case ']':
+						candidateDepth--
+						if candidateDepth == 0 {
+							firstLabelEnd = candidate
+						}
+					}
+				}
+				candidate++
+			}
+			if matchedCodeSpan {
+				continue
+			}
+			if firstLabelEnd >= 0 {
+				return firstLabelEnd
+			}
+			return -1
+		}
+		switch text[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func findBalancedLinkDestinationEnd(text string, start int) int {
+	depth := 1
+	for i := start; i < len(text); i++ {
+		if text[i] == '\\' && i+1 < len(text) && isEscapableASCIIPunctuation(text[i+1]) {
+			i++
+			continue
+		}
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 func parseAutoLink(s string) (url string, consumed int, ok bool) {
 	if len(s) < 3 || s[0] != '<' {
 		return "", 0, false
@@ -1622,6 +1771,12 @@ func renderInlines(buf *strings.Builder, inlines []Inline, convertNewlines bool,
 			buf.WriteString(html.EscapeString(v.URL))
 			buf.WriteString(`">`)
 			writeEscapedWithNewlines(buf, v.Text, convertNewlines)
+			buf.WriteString("</a>")
+		case Link:
+			buf.WriteString(`<a class="mahcdown-link" role="link" tabindex="0" data-mahcdown-href="`)
+			buf.WriteString(html.EscapeString(v.URL))
+			buf.WriteString(`">`)
+			renderInlines(buf, v.Inlines, convertNewlines, imagePolicy)
 			buf.WriteString("</a>")
 		case Checkbox:
 			buf.WriteString(`<input type="checkbox" disabled class="checkbox"`)

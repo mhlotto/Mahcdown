@@ -285,6 +285,18 @@ pairs. A depth-zero closing parenthesis remains surrounding text. Trailing `.`, 
 `!`, and `?` are removed from the URL and likewise remain ordinary text. URL parsing never consumes
 an excluded delimiter or trailing punctuation byte.
 
+Standard inline links use `[label](destination)`. Labels are parsed as inline content and may
+contain emphasis, strong emphasis, code spans, images, and backslash escapes. Successfully closed
+code spans are opaque while locating the label boundary. Link-producing syntax inside a link label,
+including standard links, autolinks, and bare URLs, remains literal so links cannot nest.
+
+Backslash-escaped `]` bytes do not close labels, and escaped parentheses do not affect destination
+balancing. Destinations may contain balanced and nested parentheses; the first unescaped closing
+parenthesis at depth zero ends the destination. Escapable punctuation in destinations is unescaped
+once. Empty labels and destinations are allowed. Malformed or unclosed link-shaped input remains
+literal text. Images retain precedence over links. Rendered links store their escaped destination
+in inert `data-mahcdown-href` metadata rather than an active `href` attribute.
+
 ---
 
 ## 4. Escapes
