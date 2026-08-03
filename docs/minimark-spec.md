@@ -88,7 +88,22 @@ Identical to MiniMark 1.1.
 
 ## 2.4 Tables
 
-Identical to MiniMark 1.1.
+A table begins with a header row followed immediately by a separator row. The separator must have
+exactly the same number of cells as the header, and each separator cell contains at least three
+hyphens with optional leading or trailing `:` alignment markers. The accepted header width is the
+fixed width of the table. Short body rows are padded with empty cells, and body cells beyond that
+width are ignored.
+
+An unescaped pipe outside a matched code span separates cells. A pipe preceded by an odd-length
+run of backslashes is literal; a pipe preceded by an even-length run is structural. Leading and
+trailing outer pipes are removed only when they are structural. Table splitting preserves all
+backslashes, including a final backslash, and normal inline parsing performs backslash unescaping
+exactly once.
+
+Code spans are opaque to table structure. They use the normal maximal backtick-run rule: the first
+later maximal run of equal length closes the span, and pipes between the matched runs are cell
+content. Differently sized runs inside a matched span are literal. An unmatched or escaped opening
+run remains literal and does not hide later structural pipes.
 
 ---
 
@@ -319,8 +334,8 @@ punctuation in image alt text and destinations is unescaped once.
 
 Table structure uses the same odd/even rule for pipes. A pipe preceded by an odd backslash run is
 cell content; a pipe preceded by an even run separates cells. Table scanning retains the
-backslashes, and normal inline parsing performs the final unescape exactly once. Pipes inside code
-spans are not treated specially by table structure in this version.
+backslashes, and normal inline parsing performs the final unescape exactly once. Pipes inside
+matched code spans are cell content as specified in §2.4.
 
 These are MiniMark's defined escape rules and do not imply complete CommonMark compatibility.
 

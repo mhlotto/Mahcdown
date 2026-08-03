@@ -454,7 +454,16 @@ func tryParseTable(state *parserState, lines []string, start int, baseIndent, de
 		if len(rowCells) == 0 {
 			break
 		}
-		row := make([][]Inline, 0, len(rowCells))
+		if len(rowCells) > len(headerCells) {
+			rowCells = rowCells[:len(headerCells)]
+		}
+		for len(rowCells) < len(headerCells) {
+			if !state.consumeItem() { // Retained padded table cell.
+				break
+			}
+			rowCells = append(rowCells, "")
+		}
+		row := make([][]Inline, 0, len(headerCells))
 		for _, cell := range rowCells {
 			if state.err != nil {
 				break
@@ -482,19 +491,18 @@ func tryParseTable(state *parserState, lines []string, start int, baseIndent, de
 
 func splitTableRow(state *parserState, line string) []string {
 	trimmed := trimOuterTablePipes(line)
+	pipes := structuralTablePipes(trimmed)
 	var cells []string
 	if !state.consumeItem() { // First retained table cell.
 		return nil
 	}
 	start := 0
-	for i := 0; i < len(trimmed); i++ {
-		if isStructuralTablePipe(trimmed, i) {
-			cells = append(cells, strings.TrimSpace(trimmed[start:i]))
-			if !state.consumeItem() { // Next retained table cell.
-				return cells
-			}
-			start = i + 1
+	for _, pipe := range pipes {
+		cells = append(cells, strings.TrimSpace(trimmed[start:pipe]))
+		if !state.consumeItem() { // Next retained table cell.
+			return cells
 		}
+		start = pipe + 1
 	}
 	cells = append(cells, strings.TrimSpace(trimmed[start:]))
 	return cells
@@ -502,10 +510,12 @@ func splitTableRow(state *parserState, line string) []string {
 
 func trimOuterTablePipes(line string) string {
 	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "|") {
+	pipes := structuralTablePipes(trimmed)
+	if len(pipes) > 0 && pipes[0] == 0 {
 		trimmed = trimmed[1:]
+		pipes = structuralTablePipes(trimmed)
 	}
-	if len(trimmed) > 0 && isStructuralTablePipe(trimmed, len(trimmed)-1) {
+	if len(pipes) > 0 && pipes[len(pipes)-1] == len(trimmed)-1 {
 		trimmed = trimmed[:len(trimmed)-1]
 	}
 	return trimmed
@@ -527,17 +537,38 @@ func isEscapedAt(text string, index int) bool {
 	return backslashes%2 == 1
 }
 
-func isStructuralTablePipe(text string, index int) bool {
-	return index >= 0 && index < len(text) && text[index] == '|' && !isEscapedAt(text, index)
+func containsStructuralTablePipe(text string) bool {
+	return len(structuralTablePipes(text)) > 0
 }
 
-func containsStructuralTablePipe(text string) bool {
-	for i := 0; i < len(text); i++ {
-		if isStructuralTablePipe(text, i) {
-			return true
+func structuralTablePipes(text string) []int {
+	runs := indexBacktickRunsWithConsume(text, func() bool { return true })
+	pipes := make([]int, 0)
+	runIndex := 0
+	for i := 0; i < len(text); {
+		for runIndex < len(runs) && runs[runIndex].start < i {
+			runIndex++
 		}
+		if runIndex < len(runs) && runs[runIndex].start == i {
+			run := runs[runIndex]
+			if isEscapedAt(text, i) {
+				i += run.length
+				continue
+			}
+			if run.nextSame >= 0 {
+				closer := runs[run.nextSame]
+				i = closer.start + closer.length
+				continue
+			}
+			i += run.length
+			continue
+		}
+		if text[i] == '|' && !isEscapedAt(text, i) {
+			pipes = append(pipes, i)
+		}
+		i++
 	}
-	return false
+	return pipes
 }
 
 func findUnescapedByte(text string, target byte, start int) int {
@@ -576,16 +607,13 @@ func parseSeparatorAlignments(state *parserState, line string, expected int) ([]
 	trimmed := trimOuterTablePipes(line)
 	aligns := make([]Align, 0, expected)
 	start := 0
-	for i := 0; i <= len(trimmed); i++ {
-		if i < len(trimmed) && !isStructuralTablePipe(trimmed, i) {
-			continue
-		}
-		align, ok := parseSeparatorCell(trimmed[start:i])
+	for _, pipe := range append(structuralTablePipes(trimmed), len(trimmed)) {
+		align, ok := parseSeparatorCell(trimmed[start:pipe])
 		if !ok || !state.consumeItem() { // Retained column alignment.
 			return nil, false
 		}
 		aligns = append(aligns, align)
-		start = i + 1
+		start = pipe + 1
 	}
 	return aligns, len(aligns) == expected
 }
@@ -902,28 +930,19 @@ func isTableStart(lines []string, start, baseIndent int) bool {
 
 func tableCellCount(line string) int {
 	trimmed := trimOuterTablePipes(line)
-	count := 1
-	for i := 0; i < len(trimmed); i++ {
-		if isStructuralTablePipe(trimmed, i) {
-			count++
-		}
-	}
-	return count
+	return len(structuralTablePipes(trimmed)) + 1
 }
 
 func validSeparatorLine(line string, expected int) bool {
 	trimmed := trimOuterTablePipes(line)
 	count := 0
 	start := 0
-	for i := 0; i <= len(trimmed); i++ {
-		if i < len(trimmed) && !isStructuralTablePipe(trimmed, i) {
-			continue
-		}
-		if _, ok := parseSeparatorCell(trimmed[start:i]); !ok {
+	for _, pipe := range append(structuralTablePipes(trimmed), len(trimmed)) {
+		if _, ok := parseSeparatorCell(trimmed[start:pipe]); !ok {
 			return false
 		}
 		count++
-		start = i + 1
+		start = pipe + 1
 	}
 	return count == expected
 }
@@ -1132,6 +1151,10 @@ type backtickRun struct {
 }
 
 func indexBacktickRuns(state *parserState, text string) []backtickRun {
+	return indexBacktickRunsWithConsume(text, state.consumeItem)
+}
+
+func indexBacktickRunsWithConsume(text string, consume func() bool) []backtickRun {
 	lastByLength := make(map[int]int)
 	var runs []backtickRun
 	for i := 0; i < len(text); {
@@ -1140,7 +1163,7 @@ func indexBacktickRuns(state *parserState, text string) []backtickRun {
 			continue
 		}
 		length := backtickRunLength(text, i)
-		if !state.consumeItem() {
+		if !consume() {
 			return nil
 		}
 		index := len(runs)
