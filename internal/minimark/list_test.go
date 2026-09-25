@@ -44,9 +44,10 @@ func TestListContinuationColumns(t *testing.T) {
 		wantText   string
 	}{
 		{"unordered continuation", "- item\n  continuation", 1, "item\ncontinuation"},
-		{"unordered insufficient", "- item\n continuation", 2, "item"},
+		{"unordered partial lazy continuation", "- item\n continuation", 1, "item\ncontinuation"},
+		{"unordered zero-indent lazy continuation", "- item\nlazy continuation", 1, "item\nlazy continuation"},
 		{"ordered continuation", "10. item\n    continuation", 1, "item\ncontinuation"},
-		{"ordered insufficient", "10. item\n   insufficient", 2, "item"},
+		{"ordered partial lazy continuation", "10. item\n   continuation", 1, "item\ncontinuation"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -58,6 +59,136 @@ func TestListContinuationColumns(t *testing.T) {
 				t.Errorf("item text = %q, want %q", got, tt.wantText)
 			}
 		})
+	}
+}
+
+func TestLazyListContinuationDoesNotAbsorbSiblingOrOuterBlocks(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantType  any
+		wantItems int
+	}{
+		{"same-level sibling", "- first\n- second", List{}, 2},
+		{"heading", "- first\n# heading", Heading{}, 1},
+		{"fence", "- first\n```\ncode\n```", CodeBlock{}, 1},
+		{"horizontal rule", "- first\n---", HorizontalRule{}, 1},
+		{"blockquote", "- first\n> quote", BlockQuote{}, 1},
+		{"table", "- first\n| a | b |\n|---|---|", Table{}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := parseListDocument(t, tt.input)
+			list := requireFirstList(t, doc)
+			if len(list.Items) != tt.wantItems {
+				t.Fatalf("list items = %d, want %d: %#v", len(list.Items), tt.wantItems, list)
+			}
+			if tt.wantItems == 1 {
+				if len(doc.Blocks) != 2 || reflect.TypeOf(doc.Blocks[1]) != reflect.TypeOf(tt.wantType) {
+					t.Fatalf("outer block for %q = %#v, want %T", tt.input, doc.Blocks, tt.wantType)
+				}
+			}
+		})
+	}
+}
+
+func TestLazyListContinuationStopsAfterBlankLine(t *testing.T) {
+	doc := parseListDocument(t, "- first\n\noutside")
+	if len(doc.Blocks) != 2 || listText(requireFirstList(t, doc).Items[0]) != "first" {
+		t.Fatalf("post-blank content was lazily absorbed: %#v", doc)
+	}
+}
+
+func TestLazyListContinuationStopsAfterIndentedBlock(t *testing.T) {
+	tests := []struct {
+		name      string
+		unordered string
+		ordered   string
+		wantType  any
+	}{
+		{"heading", "  # heading", "    # heading", Heading{}},
+		{"fenced code", "  ```\n  code\n  ```", "    ```\n    code\n    ```", CodeBlock{}},
+		{"blockquote", "  > quote", "    > quote", BlockQuote{}},
+		{"table", "  | a | b |\n  |---|---|", "    | a | b |\n    |---|---|", Table{}},
+		{"horizontal rule", "  ---", "    ---", HorizontalRule{}},
+		{"nested list", "  - child", "  - child", List{}},
+	}
+	parents := []struct {
+		name    string
+		marker  string
+		ordered bool
+	}{
+		{"unordered", "- first\n", false},
+		{"ordered", "10. first\n", true},
+	}
+	for _, parent := range parents {
+		for _, tt := range tests {
+			t.Run(parent.name+" "+tt.name, func(t *testing.T) {
+				block := tt.unordered
+				if parent.ordered {
+					block = tt.ordered
+				}
+				input := parent.marker + block + "\noutside"
+				doc := parseListDocument(t, input)
+				if len(doc.Blocks) != 2 {
+					t.Fatalf("outside text was absorbed after indented block: %#v", doc.Blocks)
+				}
+				itemBlocks := requireFirstList(t, doc).Items[0].Blocks
+				if len(itemBlocks) != 2 || reflect.TypeOf(itemBlocks[1]) != reflect.TypeOf(tt.wantType) {
+					t.Fatalf("item blocks = %#v, want trailing %T", itemBlocks, tt.wantType)
+				}
+				paragraph, ok := doc.Blocks[1].(Paragraph)
+				if !ok || !reflect.DeepEqual(paragraph.Inlines, []Inline{Text{Text: "outside"}}) {
+					t.Fatalf("outside block = %#v", doc.Blocks[1])
+				}
+			})
+		}
+	}
+}
+
+func TestLazyListContinuationDisabledWhenInitialContentIsBlock(t *testing.T) {
+	tests := []struct {
+		name      string
+		unordered string
+		ordered   string
+		wantType  any
+	}{
+		{"heading", "- # heading\noutside", "10. # heading\noutside", Heading{}},
+		{"blockquote", "- > quote\noutside", "10. > quote\noutside", BlockQuote{}},
+		{"horizontal rule", "- ---\noutside", "10. ---\noutside", HorizontalRule{}},
+		{"table", "- | a | b |\n  |---|---|\noutside", "10. | a | b |\n    |---|---|\noutside", Table{}},
+		{"nested list", "- - child\noutside", "10. - child\noutside", List{}},
+	}
+	for _, tt := range tests {
+		for _, parent := range []struct {
+			name  string
+			input string
+		}{
+			{"unordered", tt.unordered},
+			{"ordered", tt.ordered},
+		} {
+			t.Run(parent.name+" "+tt.name, func(t *testing.T) {
+				doc := parseListDocument(t, parent.input)
+				if len(doc.Blocks) != 2 {
+					t.Fatalf("outside text was absorbed after initial block: %#v", doc.Blocks)
+				}
+				itemBlocks := requireFirstList(t, doc).Items[0].Blocks
+				if len(itemBlocks) != 1 || reflect.TypeOf(itemBlocks[0]) != reflect.TypeOf(tt.wantType) {
+					t.Fatalf("initial item block = %#v, want %T", itemBlocks, tt.wantType)
+				}
+				paragraph, ok := doc.Blocks[1].(Paragraph)
+				if !ok || !reflect.DeepEqual(paragraph.Inlines, []Inline{Text{Text: "outside"}}) {
+					t.Fatalf("outside block = %#v", doc.Blocks[1])
+				}
+			})
+		}
+	}
+}
+
+func TestWhitespaceOnlyInitialListContentDoesNotEnableLazyContinuation(t *testing.T) {
+	doc := parseListDocument(t, "-    \noutside")
+	if len(doc.Blocks) != 2 || len(requireFirstList(t, doc).Items[0].Blocks) != 0 {
+		t.Fatalf("whitespace-only item absorbed lazy continuation: %#v", doc)
 	}
 }
 

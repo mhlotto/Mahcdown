@@ -165,9 +165,18 @@ A list item consists of:
 
 Item content may span multiple lines.
 
-Continuation lines must be indented **at least to the column of the first content character**
-after the marker. That many spaces are stripped; additional indentation remains in the retained
-content. Nested list lines instead strip `childBase`, preserving any optional child marker indent.
+Continuation lines indented to `contentColumn` remain paragraph text with that indentation
+stripped; additional indentation remains in the retained content. Before a blank line, ordinary
+paragraph text with partial or zero indentation is also accepted as a lazy continuation. Lazy
+continuation strips its partial leading ASCII-space indentation as list structure.
+
+Lazy continuation never overrides a same-level sibling marker, a nested list satisfying the
+normal `childBase` rule, or a recognized outer-level fenced code block, heading, horizontal rule,
+table, or blockquote. It is disabled after a blank line or after an indented block begins inside
+the item. It is also disabled from the outset when the first nonblank content after the item marker
+starts a block, including a heading, blockquote, horizontal rule, table, fenced code block, or
+nested list. Whitespace-only initial content does not enable lazy continuation. Nested list lines
+strip `childBase`, preserving any optional child marker indent.
 
 Blank lines may separate blocks within an item or appear before a nested list. They are retained
 for block separation but do not produce empty paragraphs or literal blank-text nodes. Blank lines
@@ -366,7 +375,7 @@ A conforming MiniMark 1.2 parser must:
 
 MiniMark list behavior is intentionally similar to CommonMark but simpler:
 
-- No lazy continuation lines
+- Lazy continuation applies only to uninterrupted list-item paragraph text
 - No list tight/loose distinction
 - Indentation rules are explicit and deterministic
 - Checkbox handling is fully specified

@@ -739,11 +739,12 @@ const (
 	listLineBlank listLineKind = iota
 	listLineSibling
 	listLineNested
+	listLineBlock
 	listLineContinuation
 	listLineEnd
 )
 
-func classifyListItemLine(line string, columns listItemIndent) (listLineKind, string) {
+func classifyListItemLine(line string, columns listItemIndent, allowLazyContinuation, startsOuterBlock, startsIndentedBlock bool) (listLineKind, string) {
 	if isBlank(line) {
 		return listLineBlank, ""
 	}
@@ -778,9 +779,55 @@ func classifyListItemLine(line string, columns listItemIndent) (listLineKind, st
 		return listLineSibling, ""
 	}
 	if indent >= columns.contentColumn {
+		if startsIndentedBlock {
+			return listLineBlock, trimIndent(line, columns.contentColumn)
+		}
 		return listLineContinuation, trimIndent(line, columns.contentColumn)
 	}
+	if allowLazyContinuation && !startsOuterBlock {
+		return listLineContinuation, trimIndent(line, indent)
+	}
 	return listLineEnd, ""
+}
+
+func startsListItemBlock(lines []string, index, baseIndent int) bool {
+	line := lines[index]
+	if leadingSpacesCount(line) < baseIndent {
+		return false
+	}
+	relativeLine := trimIndent(line, baseIndent)
+	if _, ok := parseFenceStart(relativeLine); ok {
+		return true
+	}
+	if _, _, ok := parseHeadingLine(relativeLine); ok {
+		return true
+	}
+	return isHorizontalRule(relativeLine) ||
+		isTableStart(lines, index, baseIndent) ||
+		isBlockQuoteLine(relativeLine)
+}
+
+func initialListItemContentStartsBlock(lines []string, start int, columns listItemIndent, content string) bool {
+	if isBlank(content) {
+		return false
+	}
+	if _, ok := parseFenceStart(content); ok {
+		return true
+	}
+	if _, _, ok := parseHeadingLine(content); ok {
+		return true
+	}
+	if _, ok := parseListMarker(content); ok {
+		return true
+	}
+	if isHorizontalRule(content) || isBlockQuoteLine(content) {
+		return true
+	}
+	if start+1 >= len(lines) || leadingSpacesCount(lines[start+1]) < columns.contentColumn {
+		return false
+	}
+	normalized := []string{content, trimIndent(lines[start+1], columns.contentColumn)}
+	return isTableStart(normalized, 0, 0)
 }
 
 func parseListItem(state *parserState, lines []string, start int, listBase int, depth int, marker listMarker) (ListItem, int) {
@@ -804,17 +851,28 @@ func parseListItem(state *parserState, lines []string, start int, listBase int, 
 		return ListItem{}, start + 1
 	}
 	itemLines = append(itemLines, content)
+	lazyContinuationAllowed := !isBlank(content) &&
+		!initialListItemContentStartsBlock(lines, start, columns, content)
 
 	i := start + 1
 	for i < len(lines) && state.err == nil {
-		kind, normalized := classifyListItemLine(lines[i], columns)
+		kind, normalized := classifyListItemLine(
+			lines[i],
+			columns,
+			lazyContinuationAllowed,
+			startsListItemBlock(lines, i, listBase),
+			startsListItemBlock(lines, i, columns.contentColumn),
+		)
 		switch kind {
-		case listLineBlank, listLineNested, listLineContinuation:
+		case listLineBlank, listLineNested, listLineBlock, listLineContinuation:
 			if !state.consumeItem() {
 				break
 			}
 			itemLines = append(itemLines, normalized)
 			i++
+			if kind == listLineBlank || kind == listLineNested || kind == listLineBlock {
+				lazyContinuationAllowed = false
+			}
 		case listLineSibling, listLineEnd:
 			goto parsed
 		}
